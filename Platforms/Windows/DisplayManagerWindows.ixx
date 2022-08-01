@@ -1,48 +1,48 @@
 module;
 
-#include <glfw/include/GLFW/glfw3.h>
-#include <expected/include/tl/expected.hpp>
+#include <GLFW/glfw3.h>
 
 export module DisplayManagerWindows;
 
-import <vector>;
-import <variant>;
-import DisplayManager;
+export import <vector>;
+export import <variant>;
+export import DisplayManager;
+import <ranges>;
+import GlfwWrapper;
+import RangeHelpers;
+import Result;
 
 export namespace ji {
-	namespace error {
-		struct GlfwIsNotInitialized {};
-
-		struct UnexpectedError {
-			std::string description;
-			int code;
-		};
-
-		using DisplayManagerWindowsError = std::variant<GlfwIsNotInitialized, UnexpectedError>;
+	namespace errors {
+		using DisplayManagerWindowsError = glfw::errors::Error;
 	}
 
 	class DisplayManagerWindows : public DisplayManager {
 	public:
-		static tl::expected<DisplayManagerWindows, error::DisplayManagerWindowsError> create() {
-			int count;
-			auto monitors = glfwGetMonitors(&count);
+		static ji::result<DisplayManagerWindows, errors::DisplayManagerWindowsError> create() {
+			co_await glfw::init();
 
-			if (!monitors) {
-				auto code = glfwGetError(nullptr);
+			auto monitors = co_await glfw::getMonitors();
 
-				if (code == GLFW_NOT_INITIALIZED) {
-					return tl::unexpected(error::GlfwIsNotInitialized{});
-				}
+			auto displayResults = monitors
+				| std::ranges::views::transform([](GLFWmonitor* monitor) { return getDisplayInfo(monitor); })
+				| ji::ranges::to<std::vector>{};
 
-				return tl::unexpected(error::UnexpectedError{ code });
+			if (auto errors = displayResults | std::ranges::views::filter([](auto&& e) { return !(bool)e; }); !errors.empty()) {
+				co_return ji::error(std::move(errors.front()).error());
 			}
 
-			for (auto i = 0u; i < count; ++i) {
-			}
+			auto displays = displayResults | std::ranges::views::transform([](auto&& e) { return std::move(e).value(); }) | ji::ranges::to<std::vector>{};
+
+			co_return DisplayManagerWindows(std::move(displays));
 		}
 
-		DisplayManagerWindows(std::vector<DisplayInfo> m_displays) {
+		DisplayManagerWindows(std::vector<DisplayInfo> displays) : m_displays(std::move(displays)) {
 
+		}
+
+		~DisplayManagerWindows() override {
+			glfw::terminate();
 		}
 
 		const std::vector<DisplayInfo>& getDisplays() const override {
@@ -52,34 +52,23 @@ export namespace ji {
 	private:
 		std::vector<DisplayInfo> m_displays;
 
-		static tl::expected<DisplayInfo, error::DisplayManagerWindowsError> getDisplayInfo(GLFWmonitor* monitor) {
-			DisplayInfo displayInfo;
+		static ji::result<DisplayInfo, errors::DisplayManagerWindowsError> getDisplayInfo(GLFWmonitor* monitor) {
+			auto id = DisplayInfo::Id{ static_cast<void*>(monitor) };
+			auto name = co_await glfw::getMonitorName(monitor);
+			auto workArea = co_await glfw::getMonitorWorkArea(monitor);
+			auto physicalSize = co_await glfw::getMonitorPhysicalSize(monitor);
+			auto contentScale = co_await glfw::getMonitorContentScale(monitor);
+			auto currentVideoMode = co_await glfw::getVideoMode(monitor);
+			auto videoModes = co_await glfw::getVideoModes(monitor);
 
-			int xpos, ypos, width, height;
-
-			glfwGetMonitorWorkarea(monitor, &xpos, &ypos, &width, &height);
-
-			int widthMM, heightMM;
-
-			glfwGetMonitorPhysicalSize(monitor, &widthMM, &heightMM);
-
-			auto namePtr = glfwGetMonitorName(monitor);
-
-			auto name = namePtr ? std::string(namePtr) : std::string();
-
-			float xscale, yscale;
-
-			glfwGetMonitorContentScale(monitor, &xscale, &yscale);
-
-			auto videoModePtr = glfwGetVideoMode(monitor);
-
-			if (!videoModePtr) {
-				return tl::unexpected{ error::UnexpectedError(glfwGetError(nullptr)) };
-			}
-
-			return DisplayInfo{
+			co_return ji::DisplayInfo{
+				.id = std::move(id),
 				.name = std::move(name),
-				.resolution = 
+				.workArea = std::move(workArea),
+				.physicalSize = std::move(physicalSize),
+				.contentScale = std::move(contentScale),
+				.currentVideoMode = std::move(currentVideoMode),
+				.videoModes = std::move(videoModes),
 			};
 		}
 	};
