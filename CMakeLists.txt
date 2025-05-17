@@ -8,18 +8,18 @@ project(JIukaviyEngine)
 set (SOURCE
 	"Tools/KeyId.ixx"
 	"Display/Display.ixx"
-	"Display/DisplayManager.ixx"
-	"Platforms/Windows/DisplayManagerWindows.ixx" 
-	"Platforms/GlfwWrapper/GlfwWrapper.ixx"
+	
+	 
 	"Tools/RangeHelpers.ixx"
 	"Tools/Pointers.ixx"
 	"Tools/Variant.ixx"
 	"Tools/GlmFormatter.ixx"
 	"Display/Window.ixx"
 	"Platforms/Windows/WindowWindows.ixx"
+	"Engine/Application.ixx"
 )
 
-add_library (JIukaviyEngine ${SOURCE} )
+add_library (JIukaviyEngine ${SOURCE} "Platforms/Windows/ApplicationWindows.ixx")
 
 set_property(TARGET JIukaviyEngine PROPERTY CXX_STANDARD 23)
 
@@ -44,6 +44,6 @@ FetchContent_Declare(
 set(GLFWPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(glfwpp glm fmt)
 
-target_link_libraries(JIukaviyEngine PRIVATE glfwpp)
+target_link_libraries(JIukaviyEngine PRIVATE GLFWPP)
 target_link_libraries(JIukaviyEngine PRIVATE fmt)
 target_link_libraries(JIukaviyEngine PRIVATE glm)

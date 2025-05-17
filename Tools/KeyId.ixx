@@ -5,7 +5,7 @@ module;
 export module KeyId;
 
 export namespace ji {
-	template<typename T, typename S = unsigned int>
+	template<typename T, typename S = size_t>
 	struct KeyId {
 	public:
 		KeyId(S&& id) : m_id(std::move(id)) {}

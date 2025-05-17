@@ -219,8 +219,6 @@ export namespace ji {
 	template<typename T> 
 	ref_opt(T*)->ref_opt<T>;
 
-
-
 	template<PointerValueType T>
 	class unique : protected std::unique_ptr<T> {
 	public:
