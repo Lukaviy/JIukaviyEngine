@@ -1,12 +1,11 @@
 module;
 
 #include <memory>
+#include <concepts>
+#include <type_traits>
 
 export module Pointers;
 
-import <concepts>;
-import <type_traits>;
-;
 export namespace ji {
 	template<typename Object, typename NotNullObject, typename NotOwnerNotNullObject>
 	struct crtp_pointer_opt {
@@ -231,9 +230,7 @@ export namespace ji {
 		template<PointerValueType U>
 		friend class unique_opt;
 	public:
-		explicit unique(T* ptr) noexcept : std::unique_ptr<T>(ptr) {
-			assert(ptr);
-		}
+		explicit unique(T* ptr) noexcept : std::unique_ptr<T>(ptr) {}
 
 		unique(const unique&) = delete;
 
@@ -325,6 +322,7 @@ export namespace ji {
 	bool operator!=(std::nullptr_t, const unique<T>&) = delete;
 
 	template<typename T, typename ...Args>
+		requires std::constructible_from<T, Args...>
 	unique<T> make_unique(Args&&... args) {
 		auto sptr = std::make_unique<T>(std::forward<Args>(args)...);
 		return unique<T>(sptr.release());

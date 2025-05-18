@@ -5,12 +5,13 @@ cmake_minimum_required (VERSION 3.30)
 include(FetchContent)
 project(JIukaviyEngine)
 
-set (SOURCE
+set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_STANDARD 23)
+set(CMAKE_CXX_SCAN_FOR_MODULES ON)
+
+set (ENGINE_SOURCES PUBLIC FILE_SET engine_modules TYPE CXX_MODULES FILES
 	"Tools/KeyId.ixx"
 	"Display/Display.ixx"
-	
-	 
-	"Tools/RangeHelpers.ixx"
 	"Tools/Pointers.ixx"
 	"Tools/Variant.ixx"
 	"Tools/GlmFormatter.ixx"
@@ -19,14 +20,18 @@ set (SOURCE
 	"Engine/Application.ixx"
 )
 
-add_library (JIukaviyEngine ${SOURCE} "Platforms/Windows/ApplicationWindows.ixx")
+set (PLATFROM_SOURCES PRIVATE FILE_SET platform_modules TYPE CXX_MODULES FILES
+	"Platforms/Windows/ApplicationWindows.ixx"
+)
 
-set_property(TARGET JIukaviyEngine PROPERTY CXX_STANDARD 23)
+add_library (JIukaviyEngine)
+target_sources(JIukaviyEngine ${ENGINE_SOURCES} ${PLATFROM_SOURCES})
+set_target_properties(JIukaviyEngine PROPERTIES COMPILE_WARNING_AS_ERROR TRUE)
 
 FetchContent_Declare(
 	glfwpp
-	GIT_REPOSITORY git@github.com:janekb04/glfwpp.git
-	GIT_TAG        17b0ca06799fec64f63f5006fe45209ce33aace0
+	GIT_REPOSITORY git@github.com:Lukaviy/glfwpp.git
+	GIT_TAG        5fd5a6af24df6660c86ac844a29d145907b462dc # master
 )
 
 FetchContent_Declare(
@@ -47,3 +52,18 @@ FetchContent_MakeAvailable(glfwpp glm fmt)
 target_link_libraries(JIukaviyEngine PRIVATE GLFWPP)
 target_link_libraries(JIukaviyEngine PRIVATE fmt)
 target_link_libraries(JIukaviyEngine PRIVATE glm)
+
+# EDITOR
+
+add_executable(Editor)
+
+set (EDITOR_SOURCES PRIVATE FILE_SET editor_modules TYPE CXX_MODULES FILES
+	"Editor/Main.ixx"
+)
+
+target_sources(Editor ${EDITOR_SOURCES})
+target_link_libraries(Editor JIukaviyEngine)
+
+#set_property(TARGET Editor 
+#	PROPERTY WIN32_EXECUTABLE TRUE
+#)

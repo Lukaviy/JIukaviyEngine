@@ -1,10 +1,9 @@
 module;
 
 #include <glm/glm.hpp>
+#include <format>
 
 export module GlmFormatter;
-
-import <format>;
 
 export namespace std {
 	template<class T, glm::length_t Length, glm::qualifier Qualifier, class CharT>

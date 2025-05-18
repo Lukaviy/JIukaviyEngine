@@ -1,13 +1,12 @@
 module;
 
 #include <glm/glm.hpp>
+#include <string>
+#include <vector>
 
 export module Display;
 
 import KeyId;
-export import <string>;
-export import <vector>;
-import <algorithm>;
 
 export namespace ji {
 	struct WorkArea {

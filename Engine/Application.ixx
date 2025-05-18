@@ -1,6 +1,9 @@
+module;
+
+#include <string>
+
 export module Application;
 
-import <string>;
 import Pointers;
 
 export namespace ji {
@@ -14,6 +17,6 @@ export namespace ji {
 
 		static unique<Application> create(ApplicationInfo&& info);
 
-		virtual void run() = 0;
+		virtual int run() = 0;
 	};
 }
