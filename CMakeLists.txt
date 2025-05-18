@@ -31,7 +31,7 @@ set_target_properties(JIukaviyEngine PROPERTIES COMPILE_WARNING_AS_ERROR TRUE)
 FetchContent_Declare(
 	glfwpp
 	GIT_REPOSITORY git@github.com:Lukaviy/glfwpp.git
-	GIT_TAG        5fd5a6af24df6660c86ac844a29d145907b462dc # master
+	GIT_TAG        f04336296e50ea9b299e68bd27a0868c5023842c # dev
 )
 
 FetchContent_Declare(
@@ -64,6 +64,6 @@ set (EDITOR_SOURCES PRIVATE FILE_SET editor_modules TYPE CXX_MODULES FILES
 target_sources(Editor ${EDITOR_SOURCES})
 target_link_libraries(Editor JIukaviyEngine)
 
-#set_property(TARGET Editor 
-#	PROPERTY WIN32_EXECUTABLE TRUE
-#)
+set_property(TARGET Editor 
+	PROPERTY WIN32_EXECUTABLE TRUE
+)
