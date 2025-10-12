@@ -16,12 +16,11 @@ set (ENGINE_SOURCES PUBLIC FILE_SET engine_modules TYPE CXX_MODULES FILES
 	"Tools/Variant.ixx"
 	"Tools/GlmFormatter.ixx"
 	"Display/Window.ixx"
-	"Platforms/Windows/WindowWindows.ixx"
 	"Engine/Application.ixx"
 )
 
 set (PLATFROM_SOURCES PRIVATE FILE_SET platform_modules TYPE CXX_MODULES FILES
-	"Platforms/Windows/ApplicationWindows.ixx"
+	"Platforms/GlfwVulkan/ApplicationGlfwVulkan.ixx"
 )
 
 add_library (JIukaviyEngine)
@@ -46,12 +45,30 @@ FetchContent_Declare(
 	GIT_TAG        40626af88bd7df9a5fb80be7b25ac85b122d6c21 # 11.2.0
 )
 
-set(GLFWPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-FetchContent_MakeAvailable(glfwpp glm fmt)
+FetchContent_Declare(
+	spdlog
+	GIT_REPOSITORY git@github.com:gabime/spdlog.git
+	GIT_TAG        b18a234ed6af38638678a3338c0d7ed90210ae6c # 1.15.3
+)
 
+FetchContent_Declare(
+	taskflow
+	GIT_REPOSITORY git@github.com:taskflow/taskflow.git
+	GIT_TAG        c6d0d6c14c04867911519c04bdc4636c09f81e9b
+)
+
+set(GLFWPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(glfwpp glm fmt spdlog taskflow)
+
+find_package(Vulkan REQUIRED)
+
+target_include_directories(JIukaviyEngine PRIVATE ${Vulkan_INCLUDE_DIRS})
+target_link_libraries(JIukaviyEngine PRIVATE Vulkan::Vulkan)
 target_link_libraries(JIukaviyEngine PRIVATE GLFWPP)
-target_link_libraries(JIukaviyEngine PRIVATE fmt)
 target_link_libraries(JIukaviyEngine PRIVATE glm)
+target_link_libraries(JIukaviyEngine PRIVATE fmt::fmt)
+target_link_libraries(JIukaviyEngine PUBLIC spdlog::spdlog)
+target_link_libraries(JIukaviyEngine PUBLIC Taskflow)
 
 # EDITOR
 

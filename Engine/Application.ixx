@@ -17,6 +17,6 @@ export namespace ji {
 
 		static unique<Application> create(ApplicationInfo&& info);
 
-		virtual int run() = 0;
+		virtual void run() = 0;
 	};
 }

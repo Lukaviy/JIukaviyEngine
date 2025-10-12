@@ -1,6 +1,10 @@
 module;
 
+#include <exception>
 #include <windows.h>
+
+#include <spdlog/spdlog.h>
+#include <spdlog/sinks/msvc_sink.h>
 
 export module Main;
 
@@ -8,8 +12,20 @@ import Application;
 
 export {
 	int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
-		auto app = ji::Application::create({ "Editor" });
+		auto msvc_logger = std::make_shared<spdlog::logger>("msvc", std::make_shared<spdlog::sinks::msvc_sink_st>());
+		spdlog::set_default_logger(std::move(msvc_logger));
 
-		return app->run();
+		try {
+			const auto app = ji::Application::create({ "Editor" });
+
+			app->run();
+
+			spdlog::drop_all();
+			return EXIT_SUCCESS;
+		} catch (const std::exception& e) {
+			spdlog::drop_all();
+			MessageBoxA(nullptr, e.what(), "Error", MB_ICONERROR | MB_OK);
+			return EXIT_FAILURE;
+		}
 	}
 }
