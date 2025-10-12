@@ -76,7 +76,7 @@ namespace vk::utils {
 				void*
 			) -> vk::Bool32
 			{
-				spdlog::info("[{}] {}", p_callback_data->pMessageIdName, p_callback_data->pMessage);
+				spdlog::info("[Vulkan] [{}] {}", p_callback_data->pMessageIdName, p_callback_data->pMessage);
 				return VK_FALSE;
 			}
 		};
@@ -85,9 +85,9 @@ namespace vk::utils {
 	bool checkValidationSupport() {
 		const auto available_layers = vk::enumerateInstanceLayerProperties();
 
-		spdlog::info("Available validation layers: [{}]\n", fmt::join(available_layers | std::ranges::views::transform([](const vk::LayerProperties& layer) {
-			return std::string_view(layer.layerName.data(), layer.layerName.size());
-		}), ", "));
+		spdlog::info("Available validation layers: [\n{}\n]", fmt::join(available_layers | std::ranges::views::transform([](const vk::LayerProperties& layer) {
+			return std::string_view(layer.layerName.data());
+		}), ",\n"));
 
 		for (const auto& validation_layer : validationLayers) {
 			if (std::ranges::find_if(available_layers, [&](const vk::LayerProperties& layer) {
@@ -112,7 +112,7 @@ namespace vk::utils {
 			.applicationVersion = VK_MAKE_VERSION(1, 0, 0),
 			.pEngineName = "JIukaviyEngine",
 			.engineVersion = VK_MAKE_VERSION(1, 0, 0),
-			.apiVersion = VK_API_VERSION_1_0
+			.apiVersion = VK_API_VERSION_1_3
 		};
 
 		auto extensions = glfw::getRequiredInstanceExtensions();
@@ -147,7 +147,11 @@ namespace vk::utils {
 			.pQueuePriorities = &queuePriority
 		};
 
-		vk::PhysicalDeviceFeatures device_features{ .geometryShader = true };
+		vk::PhysicalDeviceFeatures device_features{
+			.geometryShader = true,
+			.sampleRateShading = true,
+			.multiDrawIndirect = true
+		};
 
 		vk::DeviceCreateInfo device_create_info{
 			.queueCreateInfoCount = 1,
@@ -176,18 +180,84 @@ namespace vk::utils {
 		return true;
 	}
 
+	struct SwapChainSupportDetails {
+		vk::SurfaceCapabilitiesKHR capabilities;
+		std::vector<vk::SurfaceFormatKHR> formats;
+		std::vector<vk::PresentModeKHR> presentModes;
+	};
+
+	SwapChainSupportDetails getChainSupportDetails(const vk::raii::PhysicalDevice& device, const vk::raii::SurfaceKHR& surface) {
+		return {
+			.capabilities = device.getSurfaceCapabilitiesKHR(surface),
+			.formats = device.getSurfaceFormatsKHR(surface),
+			.presentModes = device.getSurfacePresentModesKHR(surface)
+		};
+	}
+
+	bool checkSwapChainSupport(const SwapChainSupportDetails& support_details) {
+		return !support_details.formats.empty() && !support_details.presentModes.empty();
+	}
+
+	vk::SurfaceFormatKHR chooseSwapSurfaceFormat(const std::vector<vk::SurfaceFormatKHR>& formats) {
+		if (formats.empty()) {
+			throw std::runtime_error("Available formats for surface is empty!");
+		}
+
+		for (const auto& format : formats) {
+			if (format.format == vk::Format::eB8G8R8Srgb && format.colorSpace == vk::ColorSpaceKHR::eSrgbNonlinear) {
+				return format;
+			}
+		}
+
+		return formats.front();
+	}
+
+	vk::PresentModeKHR chooseSwapPresentMode(const std::vector<vk::PresentModeKHR>& present_modes) {
+		if (present_modes.empty()) {
+			throw std::runtime_error("Available present modes for surface is empty!");
+		}
+
+		const auto it = std::ranges::find(present_modes, vk::PresentModeKHR::eMailbox);
+		if (it != present_modes.end()) {
+			return *it;
+		}
+
+		return vk::PresentModeKHR::eFifo;
+	}
+
+	vk::Extent2D chooseSwapExtent(const glfw::Window& window, const vk::SurfaceCapabilitiesKHR& capabilities) {
+		if (capabilities.currentExtent.width != std::numeric_limits<uint32_t>::max()) {
+			return capabilities.currentExtent;
+		}
+
+		const auto [width, height] = window.getFramebufferSize();
+
+		return {
+			.width = std::clamp(static_cast<uint32_t>(width), capabilities.minImageExtent.width, capabilities.maxImageExtent.width),
+			.height = std::clamp(static_cast<uint32_t>(height), capabilities.minImageExtent.height, capabilities.maxImageExtent.height)
+		};
+	}
+
 	bool isDeviceSuitable(const vk::raii::PhysicalDevice& device, const vk::raii::SurfaceKHR& surface) {
 		return
 			device.getProperties().deviceType == vk::PhysicalDeviceType::eDiscreteGpu &&
 			device.getFeatures().geometryShader &&
 			findQueueFamilies(device, surface).isComplete() &&
-			checkDeviceExtensionSupport(device)
+			checkDeviceExtensionSupport(device) &&
+			checkSwapChainSupport(getChainSupportDetails(device, surface))
 		;
 	}
 
-	vk::raii::PhysicalDevice selectPhysicalDevice(const vk::raii::Instance& intance, const vk::raii::SurfaceKHR& surface) {
-		const auto physical_devices = vk::raii::PhysicalDevices{ intance };
+	void logPhysicalDevicesInfo(const vk::raii::PhysicalDevices& physical_devices) {
+		spdlog::info("Available physical devices: \n{}", fmt::join(physical_devices | std::ranges::views::transform([](const vk::raii::PhysicalDevice& device) {
+			return fmt::format("Device Name: {}, API version: {}", 
+				device.getProperties().deviceName.data(), 
+				device.getProperties().apiVersion
+			);
+		}), "\n"));
+	}
 
+	vk::raii::PhysicalDevice selectPhysicalDevice(const vk::raii::PhysicalDevices& physical_devices, const vk::raii::SurfaceKHR& surface) {
 		if (physical_devices.empty()) {
 			throw std::runtime_error("No Vulkan physical devices found!");
 		}
@@ -233,6 +303,43 @@ namespace vk::utils {
 
 		return { 800, 600, app_info.name.data() };
 	}
+
+	vk::raii::SwapchainKHR createSwapChain(const SwapChainSupportDetails& swap_chain_support_details, const glfw::Window& window, const vk::raii::Device& device, const vk::raii::SurfaceKHR& surface, const FamilyQueueIndices& queue_family_indices) {
+		const auto image_count = [&]() {
+			const auto desired = swap_chain_support_details.capabilities.minImageCount + 1;
+			if (swap_chain_support_details.capabilities.maxImageCount > 0) {
+				return std::min(desired, swap_chain_support_details.capabilities.maxImageCount);
+			}
+			return desired;
+		}();
+
+		const auto surface_format = chooseSwapSurfaceFormat(swap_chain_support_details.formats);
+		const auto present_mode = chooseSwapPresentMode(swap_chain_support_details.presentModes);
+		const auto extent = chooseSwapExtent(window, swap_chain_support_details.capabilities);
+
+		const auto diff_indices = queue_family_indices.graphicsFamily != queue_family_indices.presentFamily;
+		const std::uint32_t indices[] = { queue_family_indices.graphicsFamily.value(), queue_family_indices.presentFamily.value() };
+
+		const auto create_info = vk::SwapchainCreateInfoKHR{
+			.surface = surface,
+			.minImageCount = image_count,
+			.imageFormat = surface_format.format,
+			.imageColorSpace = surface_format.colorSpace,
+			.imageExtent = extent,
+			.imageArrayLayers = 1,
+			.imageUsage = vk::ImageUsageFlagBits::eColorAttachment,
+			.imageSharingMode = diff_indices ? vk::SharingMode::eConcurrent : vk::SharingMode::eExclusive,
+			.queueFamilyIndexCount = diff_indices ? 2u : 0u,
+			.pQueueFamilyIndices = diff_indices ? indices : nullptr,
+			.preTransform = swap_chain_support_details.capabilities.currentTransform,
+			.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
+			.presentMode = present_mode,
+			.clipped = true,
+			.oldSwapchain = nullptr
+		};
+
+		return vk::raii::SwapchainKHR{ device, create_info };
+	}
 }
 
 namespace ji {
@@ -252,7 +359,8 @@ namespace ji {
 			vk::raii::Device&& device, 
 			vk::raii::Queue&& queue, 
 			glfw::Window&& window,
-			vk::raii::SurfaceKHR&& surface
+			vk::raii::SurfaceKHR&& surface,
+			vk::raii::SwapchainKHR&& swap_chain
 		) :
 			m_vkInstance(std::move(instance)),
 			m_glfw(std::move(lib)),
@@ -260,7 +368,8 @@ namespace ji {
 			m_applicationInfo(std::move(info)),
 			m_vkDevice(std::move(device)),
 			m_vkQueue(std::move(queue)),
-			m_vkSurface(std::move(surface))
+			m_vkSurface(std::move(surface)),
+			m_vkSwapChain(std::move(swap_chain))
 		{
 #ifndef NDEBUG
 			m_debugMessenger = vk::raii::DebugUtilsMessengerEXT{ m_vkInstance, vk::utils::createDebugMessenger() };
@@ -277,6 +386,7 @@ namespace ji {
 		vk::raii::Device m_vkDevice;
 		vk::raii::Queue m_vkQueue;
 		vk::raii::SurfaceKHR m_vkSurface;
+		vk::raii::SwapchainKHR m_vkSwapChain;
 		std::optional<vk::raii::DebugUtilsMessengerEXT> m_debugMessenger;
 	};
 
@@ -289,8 +399,19 @@ namespace ji {
 		vk::utils::logPhysicalDevicesInfo(physical_devices);
 		const auto physical_device = vk::utils::selectPhysicalDevice(physical_devices, surface);
 		auto device = vk::utils::createDevice(physical_device, surface);
-		auto queue = vk::utils::createQueue(device, vk::utils::findQueueFamilies(physical_device, surface));
+		const auto queue_family_indices = vk::utils::findQueueFamilies(physical_device, surface);
+		auto queue = vk::utils::createQueue(device, queue_family_indices);
+		auto swap_chain = vk::utils::createSwapChain(vk::utils::getChainSupportDetails(physical_device, surface), window, device, surface, queue_family_indices);
 
-		return make_unique<ApplicationWindows>(std::move(lib), std::move(info), std::move(instance), std::move(device), std::move(queue), std::move(window), std::move(surface));
+		return make_unique<ApplicationWindows>(
+			std::move(lib), 
+			std::move(info), 
+			std::move(instance), 
+			std::move(device), 
+			std::move(queue), 
+			std::move(window), 
+			std::move(surface), 
+			std::move(swap_chain)
+		);
 	}
 }
