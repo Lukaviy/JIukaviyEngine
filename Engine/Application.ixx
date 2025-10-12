@@ -15,7 +15,7 @@ export namespace ji {
 	public:
 		virtual ~Application() = default;
 
-		static unique<Application> create(ApplicationInfo&& info);
+		static ji::unique<Application> create(ApplicationInfo&& info);
 
 		virtual void run() = 0;
 	};

@@ -304,7 +304,7 @@ namespace vk::utils {
 		return { 800, 600, app_info.name.data() };
 	}
 
-	vk::raii::SwapchainKHR createSwapChain(const SwapChainSupportDetails& swap_chain_support_details, const glfw::Window& window, const vk::raii::Device& device, const vk::raii::SurfaceKHR& surface, const FamilyQueueIndices& queue_family_indices) {
+	vk::SwapchainCreateInfoKHR getSwapChainCreateInfo(const SwapChainSupportDetails& swap_chain_support_details, const glfw::Window& window, const vk::raii::Device& device, const vk::raii::SurfaceKHR& surface, const FamilyQueueIndices& queue_family_indices) {
 		const auto image_count = [&]() {
 			const auto desired = swap_chain_support_details.capabilities.minImageCount + 1;
 			if (swap_chain_support_details.capabilities.maxImageCount > 0) {
@@ -320,7 +320,7 @@ namespace vk::utils {
 		const auto diff_indices = queue_family_indices.graphicsFamily != queue_family_indices.presentFamily;
 		const std::uint32_t indices[] = { queue_family_indices.graphicsFamily.value(), queue_family_indices.presentFamily.value() };
 
-		const auto create_info = vk::SwapchainCreateInfoKHR{
+		return vk::SwapchainCreateInfoKHR{
 			.surface = surface,
 			.minImageCount = image_count,
 			.imageFormat = surface_format.format,
@@ -337,8 +337,38 @@ namespace vk::utils {
 			.clipped = true,
 			.oldSwapchain = nullptr
 		};
+	}
 
-		return vk::raii::SwapchainKHR{ device, create_info };
+	std::vector<vk::raii::ImageView> createImageViews(const vk::raii::Device& device, const vk::raii::SwapchainKHR& swap_chain, const vk::SwapchainCreateInfoKHR& swap_chain_create_info) {
+		const auto images = swap_chain.getImages();
+
+		std::vector<vk::raii::ImageView> res;
+		res.reserve(images.size());
+
+		for (const auto& image : images) {
+			const auto create_info = vk::ImageViewCreateInfo{
+				.image = image,
+				.viewType = vk::ImageViewType::e2D,
+				.format = swap_chain_create_info.imageFormat,
+				.components = {
+					.r = ComponentSwizzle::eIdentity,
+					.g = ComponentSwizzle::eIdentity,
+					.b = ComponentSwizzle::eIdentity,
+					.a = ComponentSwizzle::eIdentity,
+				},
+				.subresourceRange = {
+					.aspectMask = vk::ImageAspectFlagBits::eColor,
+					.baseMipLevel = 0,
+					.levelCount = 1,
+					.baseArrayLayer = 0,
+					.layerCount = 1
+				}
+			};
+
+			res.push_back(device.createImageView(create_info));
+		}
+
+		return res;
 	}
 }
 
@@ -353,14 +383,15 @@ namespace ji {
 		}
 
 		ApplicationWindows(
-			glfw::GlfwLibrary lib, 
-			ApplicationInfo&& info, 
-			vk::raii::Instance&& instance, 
-			vk::raii::Device&& device, 
-			vk::raii::Queue&& queue, 
+			glfw::GlfwLibrary lib,
+			ApplicationInfo&& info,
+			vk::raii::Instance&& instance,
+			vk::raii::Device&& device,
+			vk::raii::Queue&& queue,
 			glfw::Window&& window,
 			vk::raii::SurfaceKHR&& surface,
-			vk::raii::SwapchainKHR&& swap_chain
+			vk::raii::SwapchainKHR&& swap_chain,
+			std::vector<vk::raii::ImageView>&& image_views
 		) :
 			m_vkInstance(std::move(instance)),
 			m_glfw(std::move(lib)),
@@ -369,7 +400,8 @@ namespace ji {
 			m_vkDevice(std::move(device)),
 			m_vkQueue(std::move(queue)),
 			m_vkSurface(std::move(surface)),
-			m_vkSwapChain(std::move(swap_chain))
+			m_vkSwapChain(std::move(swap_chain)),
+			m_vkImageViews(std::move(image_views))
 		{
 #ifndef NDEBUG
 			m_debugMessenger = vk::raii::DebugUtilsMessengerEXT{ m_vkInstance, vk::utils::createDebugMessenger() };
@@ -387,10 +419,11 @@ namespace ji {
 		vk::raii::Queue m_vkQueue;
 		vk::raii::SurfaceKHR m_vkSurface;
 		vk::raii::SwapchainKHR m_vkSwapChain;
+		std::vector<vk::raii::ImageView> m_vkImageViews;
 		std::optional<vk::raii::DebugUtilsMessengerEXT> m_debugMessenger;
 	};
 
-	unique<Application> Application::create(ApplicationInfo&& info) {
+	ji::unique<Application> Application::create(ApplicationInfo&& info) {
 		auto lib = glfw::init();
 		auto instance = vk::utils::createInstance(info);
 		auto window = vk::utils::createWindow(info);
@@ -401,17 +434,20 @@ namespace ji {
 		auto device = vk::utils::createDevice(physical_device, surface);
 		const auto queue_family_indices = vk::utils::findQueueFamilies(physical_device, surface);
 		auto queue = vk::utils::createQueue(device, queue_family_indices);
-		auto swap_chain = vk::utils::createSwapChain(vk::utils::getChainSupportDetails(physical_device, surface), window, device, surface, queue_family_indices);
+		const auto swap_chain_create_info = vk::utils::getSwapChainCreateInfo(vk::utils::getChainSupportDetails(physical_device, surface), window, device, surface, queue_family_indices);
+		auto swap_chain = vk::raii::SwapchainKHR{ device, swap_chain_create_info };
+		auto image_views = vk::utils::createImageViews(device, swap_chain, swap_chain_create_info);
 
-		return make_unique<ApplicationWindows>(
-			std::move(lib), 
-			std::move(info), 
-			std::move(instance), 
-			std::move(device), 
-			std::move(queue), 
-			std::move(window), 
-			std::move(surface), 
-			std::move(swap_chain)
+		return ji::make_unique<ApplicationWindows>(
+			std::move(lib),
+			std::move(info),
+			std::move(instance),
+			std::move(device),
+			std::move(queue),
+			std::move(window),
+			std::move(surface),
+			std::move(swap_chain),
+			std::move(image_views)
 		);
 	}
 }
