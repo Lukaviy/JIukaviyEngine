@@ -14,6 +14,7 @@ export {
 	int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {
 		auto msvc_logger = std::make_shared<spdlog::logger>("msvc", std::make_shared<spdlog::sinks::msvc_sink_st>());
 		spdlog::set_default_logger(std::move(msvc_logger));
+		spdlog::flush_on(spdlog::level::info);
 
 		try {
 			{
