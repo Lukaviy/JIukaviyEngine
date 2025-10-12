@@ -16,9 +16,10 @@ export {
 		spdlog::set_default_logger(std::move(msvc_logger));
 
 		try {
-			const auto app = ji::Application::create({ "Editor" });
-
-			app->run();
+			{
+				const auto app = ji::Application::create({ "Editor" });
+				app->run();
+			}
 
 			spdlog::drop_all();
 			return EXIT_SUCCESS;

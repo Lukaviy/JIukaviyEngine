@@ -254,13 +254,13 @@ namespace ji {
 			glfw::Window&& window,
 			vk::raii::SurfaceKHR&& surface
 		) :
+			m_vkInstance(std::move(instance)),
 			m_glfw(std::move(lib)),
 			m_window(std::move(window)),
 			m_applicationInfo(std::move(info)),
 			m_vkDevice(std::move(device)),
 			m_vkQueue(std::move(queue)),
-			m_vkSurface(std::move(surface)),
-			m_vkInstance(std::move(instance))
+			m_vkSurface(std::move(surface))
 		{
 #ifndef NDEBUG
 			m_debugMessenger = vk::raii::DebugUtilsMessengerEXT{ m_vkInstance, vk::utils::createDebugMessenger() };
@@ -268,20 +268,15 @@ namespace ji {
 		}
 
 	private:
+		// Order is important here, it declares in what order destructors will be called
 
-#ifndef NDEBUG
-		static constexpr auto enableValidationLayers = true;
-#else
-		static constexpr auto enableValidationLayers = false;
-#endif
-
+		vk::raii::Instance m_vkInstance;
 		glfw::GlfwLibrary m_glfw;
 		glfw::Window m_window;
 		ApplicationInfo m_applicationInfo;
 		vk::raii::Device m_vkDevice;
 		vk::raii::Queue m_vkQueue;
 		vk::raii::SurfaceKHR m_vkSurface;
-		vk::raii::Instance m_vkInstance;
 		std::optional<vk::raii::DebugUtilsMessengerEXT> m_debugMessenger;
 	};
 
@@ -290,7 +285,9 @@ namespace ji {
 		auto instance = vk::utils::createInstance(info);
 		auto window = vk::utils::createWindow(info);
 		auto surface = vk::utils::createSurface(instance, window);
-		const auto physical_device = vk::utils::selectPhysicalDevice(instance, surface);
+		const auto physical_devices = vk::raii::PhysicalDevices{ instance };
+		vk::utils::logPhysicalDevicesInfo(physical_devices);
+		const auto physical_device = vk::utils::selectPhysicalDevice(physical_devices, surface);
 		auto device = vk::utils::createDevice(physical_device, surface);
 		auto queue = vk::utils::createQueue(device, vk::utils::findQueueFamilies(physical_device, surface));
 
