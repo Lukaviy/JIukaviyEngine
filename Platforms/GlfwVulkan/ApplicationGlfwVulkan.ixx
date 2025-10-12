@@ -17,6 +17,14 @@ import Application;
 import Pointers;
 
 namespace vk::utils {
+	consteval bool isValidationLayersEnabled() {
+#ifndef NDEBUG
+		return true;
+#else
+		return false;
+#endif
+	}
+
 	static constexpr std::array<const char*, 1> validationLayers{
 		"VK_LAYER_KHRONOS_validation"
 	};
@@ -74,10 +82,28 @@ namespace vk::utils {
 		};
 	}
 
+	bool checkValidationSupport() {
+		const auto available_layers = vk::enumerateInstanceLayerProperties();
+
+		spdlog::info("Available validation layers: [{}]\n", fmt::join(available_layers | std::ranges::views::transform([](const vk::LayerProperties& layer) {
+			return std::string_view(layer.layerName.data(), layer.layerName.size());
+		}), ", "));
+
+		for (const auto& validation_layer : validationLayers) {
+			if (std::ranges::find_if(available_layers, [&](const vk::LayerProperties& layer) {
+				return std::string_view(layer.layerName.data()) == std::string_view(validation_layer);
+			}) == available_layers.end()) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
 	vk::raii::Instance createInstance(const ji::ApplicationInfo& info) {
-		/*if (enableValidationLayers && !checkValidationSupport()) {
+		if (isValidationLayersEnabled() && !checkValidationSupport()) {
 			throw std::runtime_error("Validation layers requested, but not available!");
-		}*/
+		}
 
 		const vk::raii::Context context;
 
@@ -175,24 +201,6 @@ namespace vk::utils {
 		}
 
 		return *physical_device;
-	}
-
-	bool checkValidationSupport() {
-		const auto available_layers = vk::enumerateInstanceLayerProperties();
-
-		spdlog::info("Available validation layers: [{}]\n", fmt::join(available_layers | std::ranges::views::transform([](const vk::LayerProperties& layer) {
-			return std::string_view(layer.layerName.data(), layer.layerName.size());
-			}), ", "));
-
-		for (const auto& validation_layer : validationLayers) {
-			if (std::ranges::find(available_layers, validation_layer, [](const vk::LayerProperties& layer) {
-				return std::string_view(layer.layerName.data(), layer.layerName.size());
-			}) == available_layers.end()) {
-				return false;
-			}
-		}
-
-		return true;
 	}
 
 	vk::raii::Queue createQueue(
