@@ -84,3 +84,9 @@ target_link_libraries(Editor JIukaviyEngine)
 set_property(TARGET Editor 
 	PROPERTY WIN32_EXECUTABLE TRUE
 )
+
+# Shaders
+
+add_subdirectory(res/shaders)
+
+add_dependencies(Editor Shaders)
