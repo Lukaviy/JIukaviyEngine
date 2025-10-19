@@ -4,7 +4,7 @@ module;
 #include <concepts>
 #include <type_traits>
 
-export module Pointers;
+export module pointers;
 
 export namespace ji {
 	template<typename Object, typename NotNullObject, typename NotOwnerNotNullObject>

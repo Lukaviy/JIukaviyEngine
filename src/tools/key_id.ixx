@@ -2,7 +2,7 @@ module;
 
 #include <compare>
 
-export module KeyId;
+export module key_id;
 
 export namespace ji {
 	template<typename T, typename S = size_t>

@@ -13,8 +13,8 @@ module;
 
 export module ApplicationWindows;
 
-import Application;
-import Pointers;
+import application;
+import pointers;
 
 namespace vk::utils {
 	consteval bool isValidationLayersEnabled() {
@@ -377,7 +377,6 @@ namespace ji {
 	public:
 		void run() override {
 			while (!m_window.shouldClose()) {
-				//window.swapBuffers();
 				glfw::pollEvents();
 			}
 		}

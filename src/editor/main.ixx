@@ -6,9 +6,9 @@ module;
 #include <spdlog/spdlog.h>
 #include <spdlog/sinks/msvc_sink.h>
 
-export module Main;
+export module main;
 
-import Application;
+import application;
 
 export {
 	int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine, int nCmdShow) {

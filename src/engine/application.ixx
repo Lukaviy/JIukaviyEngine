@@ -2,9 +2,9 @@ module;
 
 #include <string>
 
-export module Application;
+export module application;
 
-import Pointers;
+import pointers;
 
 export namespace ji {
 	struct ApplicationInfo {

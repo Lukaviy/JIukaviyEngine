@@ -2,7 +2,7 @@ module;
 
 #include <glm/glm.hpp>
 
-export module Window;
+export module window;
 
 export namespace ji {
 	class Window {

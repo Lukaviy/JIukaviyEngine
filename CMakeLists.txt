@@ -9,21 +9,21 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_SCAN_FOR_MODULES ON)
 
-set (ENGINE_SOURCES PUBLIC FILE_SET engine_modules TYPE CXX_MODULES FILES
-	"Tools/KeyId.ixx"
-	"Display/Display.ixx"
-	"Tools/Pointers.ixx"
-	"Tools/Variant.ixx"
-	"Tools/GlmFormatter.ixx"
-	"Display/Window.ixx"
-	"Engine/Application.ixx"
+set(ENGINE_SOURCES PUBLIC FILE_SET engine_modules TYPE CXX_MODULES FILES
+	"src/tools/key_id.ixx"
+	"src/tools/pointers.ixx"
+	"src/tools/variant.ixx"
+	"src/tools/glm_formatter.ixx"
+	"src/display/window.ixx"
+	"src/display/display.ixx"
+	"src/engine/application.ixx"
 )
 
 set (PLATFROM_SOURCES PRIVATE FILE_SET platform_modules TYPE CXX_MODULES FILES
-	"Platforms/GlfwVulkan/ApplicationGlfwVulkan.ixx"
+	"src/platforms/glfw_vulkan/application_glfw_vulkan.ixx"
 )
 
-add_library (JIukaviyEngine)
+add_library(JIukaviyEngine)
 target_sources(JIukaviyEngine ${ENGINE_SOURCES} ${PLATFROM_SOURCES})
 set_target_properties(JIukaviyEngine PROPERTIES COMPILE_WARNING_AS_ERROR TRUE)
 
@@ -75,7 +75,7 @@ target_link_libraries(JIukaviyEngine PUBLIC Taskflow)
 add_executable(Editor)
 
 set (EDITOR_SOURCES PRIVATE FILE_SET editor_modules TYPE CXX_MODULES FILES
-	"Editor/Main.ixx"
+	"src/editor/main.ixx"
 )
 
 target_sources(Editor ${EDITOR_SOURCES})

@@ -4,9 +4,9 @@ module;
 #include <string>
 #include <vector>
 
-export module Display;
+export module display;
 
-import KeyId;
+import key_id;
 
 export namespace ji {
 	struct WorkArea {

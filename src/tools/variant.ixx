@@ -1,4 +1,4 @@
-export module Variant;
+export module variant;
 
 export namespace ji {
 	template<class... Ts> struct cases : Ts... { using Ts::operator()...; };
