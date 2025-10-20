@@ -14,6 +14,7 @@ set(ENGINE_SOURCES PUBLIC FILE_SET engine_modules TYPE CXX_MODULES FILES
 	"src/tools/pointers.ixx"
 	"src/tools/variant.ixx"
 	"src/tools/glm_formatter.ixx"
+	"src/tools/resource_system.ixx"
 	"src/display/window.ixx"
 	"src/display/display.ixx"
 	"src/engine/application.ixx"

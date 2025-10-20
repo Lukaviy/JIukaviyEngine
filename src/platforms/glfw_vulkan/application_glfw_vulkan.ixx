@@ -15,6 +15,7 @@ export module ApplicationWindows;
 
 import application;
 import pointers;
+import resource_system;
 
 namespace vk::utils {
 	consteval bool isValidationLayersEnabled() {
@@ -33,21 +34,21 @@ namespace vk::utils {
 		VK_KHR_SWAPCHAIN_EXTENSION_NAME
 	};
 
-	struct FamilyQueueIndices {
+	struct QueueFamilyIndices {
 		std::optional<std::uint32_t> graphicsFamily;
-		std::optional<uint32_t> presentFamily;
+		std::optional<std::uint32_t> presentFamily;
 
 		bool isComplete() const {
 			return graphicsFamily && presentFamily;
 		}
 	};
 
-	FamilyQueueIndices findQueueFamilies(const vk::raii::PhysicalDevice& device, const vk::raii::SurfaceKHR& surface) {
-		FamilyQueueIndices result;
+	QueueFamilyIndices findQueueFamilies(const vk::raii::PhysicalDevice& device, const vk::raii::SurfaceKHR& surface) {
+		QueueFamilyIndices result;
 
 		const auto properties = device.getQueueFamilyProperties();
 
-		for (auto i = 0u; i < properties.size(); ++i) {
+		for (auto i = 0u; i < properties.size() && !result.isComplete(); ++i) {
 			const auto& property = properties[i];
 			if (property.queueFlags & vk::QueueFlagBits::eGraphics) {
 				result.graphicsFamily = i;
@@ -77,7 +78,7 @@ namespace vk::utils {
 			) -> vk::Bool32
 			{
 				spdlog::info("[Vulkan] [{}] {}", p_callback_data->pMessageIdName, p_callback_data->pMessage);
-				return VK_FALSE;
+				return vk::False;
 			}
 		};
 	}
@@ -148,9 +149,9 @@ namespace vk::utils {
 		};
 
 		vk::PhysicalDeviceFeatures device_features{
-			.geometryShader = true,
-			.sampleRateShading = true,
-			.multiDrawIndirect = true
+			/*.geometryShader = vk::True,
+			.sampleRateShading = vk::True,
+			.multiDrawIndirect = vk::False,*/
 		};
 
 		vk::DeviceCreateInfo device_create_info{
@@ -275,7 +276,7 @@ namespace vk::utils {
 
 	vk::raii::Queue createQueue(
 		const vk::raii::Device& device,
-		const FamilyQueueIndices& indices
+		const QueueFamilyIndices& indices
 	) {
 		if (!indices.graphicsFamily.has_value()) {
 			throw std::runtime_error("No graphics queue family found!");
@@ -304,7 +305,7 @@ namespace vk::utils {
 		return { 800, 600, app_info.name.data() };
 	}
 
-	vk::SwapchainCreateInfoKHR getSwapChainCreateInfo(const SwapChainSupportDetails& swap_chain_support_details, const glfw::Window& window, const vk::raii::Device& device, const vk::raii::SurfaceKHR& surface, const FamilyQueueIndices& queue_family_indices) {
+	vk::SwapchainCreateInfoKHR getSwapChainCreateInfo(const SwapChainSupportDetails& swap_chain_support_details, const glfw::Window& window, const vk::raii::Device& device, const vk::raii::SurfaceKHR& surface, const QueueFamilyIndices& queue_family_indices) {
 		const auto image_count = [&]() {
 			const auto desired = swap_chain_support_details.capabilities.minImageCount + 1;
 			if (swap_chain_support_details.capabilities.maxImageCount > 0) {
@@ -318,7 +319,7 @@ namespace vk::utils {
 		const auto extent = chooseSwapExtent(window, swap_chain_support_details.capabilities);
 
 		const auto diff_indices = queue_family_indices.graphicsFamily != queue_family_indices.presentFamily;
-		const std::uint32_t indices[] = { queue_family_indices.graphicsFamily.value(), queue_family_indices.presentFamily.value() };
+		const auto indices = std::array{ queue_family_indices.graphicsFamily.value(), queue_family_indices.presentFamily.value() };
 
 		return vk::SwapchainCreateInfoKHR{
 			.surface = surface,
@@ -329,12 +330,12 @@ namespace vk::utils {
 			.imageArrayLayers = 1,
 			.imageUsage = vk::ImageUsageFlagBits::eColorAttachment,
 			.imageSharingMode = diff_indices ? vk::SharingMode::eConcurrent : vk::SharingMode::eExclusive,
-			.queueFamilyIndexCount = diff_indices ? 2u : 0u,
-			.pQueueFamilyIndices = diff_indices ? indices : nullptr,
+			.queueFamilyIndexCount = diff_indices ? static_cast<uint32_t>(indices.size()) : 0u,
+			.pQueueFamilyIndices = diff_indices ? indices.data() : nullptr,
 			.preTransform = swap_chain_support_details.capabilities.currentTransform,
 			.compositeAlpha = vk::CompositeAlphaFlagBitsKHR::eOpaque,
 			.presentMode = present_mode,
-			.clipped = true,
+			.clipped = vk::True,
 			.oldSwapchain = nullptr
 		};
 	}
@@ -370,6 +371,185 @@ namespace vk::utils {
 
 		return res;
 	}
+
+	vk::raii::ShaderModule createShaderModule(const vk::raii::Device& device, const std::vector<std::byte>& code) {
+		vk::ShaderModuleCreateInfo create_info{
+			.codeSize = code.size(),
+			.pCode = reinterpret_cast<const uint32_t*>(code.data())
+		};
+		return { device, create_info };
+	}
+
+	vk::raii::RenderPass createRenderPass(const vk::raii::Device& device, const vk::Format& format) {
+		const auto color_attachment = vk::AttachmentDescription{
+			.format = format,
+			.samples = SampleCountFlagBits::e1,
+			.loadOp = AttachmentLoadOp::eClear,
+			.storeOp = AttachmentStoreOp::eStore,
+			.stencilLoadOp = AttachmentLoadOp::eDontCare,
+			.stencilStoreOp = AttachmentStoreOp::eDontCare,
+			.initialLayout = ImageLayout::eUndefined,
+			.finalLayout = ImageLayout::ePresentSrcKHR
+		};
+
+		const auto attachment_reference = vk::AttachmentReference{
+			.attachment = 0,
+			.layout = ImageLayout::eColorAttachmentOptimal
+		};
+
+		const auto subpass = vk::SubpassDescription{
+			.pipelineBindPoint = PipelineBindPoint::eGraphics,
+			.colorAttachmentCount = 1,
+			.pColorAttachments = &attachment_reference
+		};
+
+		const auto render_pass_create_info = vk::RenderPassCreateInfo{
+			.attachmentCount = 1,
+			.pAttachments = &color_attachment,
+			.subpassCount = 1,
+			.pSubpasses = &subpass
+		};
+
+		return device.createRenderPass(render_pass_create_info);
+	}
+
+	vk::raii::PipelineLayout createGraphicsPipelineLayout(const vk::raii::Device& device) {
+		return device.createPipelineLayout(vk::PipelineLayoutCreateInfo{
+			.setLayoutCount = 0,
+			.pSetLayouts = nullptr,
+			.pushConstantRangeCount = 0,
+			.pPushConstantRanges = nullptr
+		});
+	}
+
+	vk::raii::Pipeline createGraphicsPipeline(const vk::raii::Device& device, const vk::Extent2D& swapchain_extent, const vk::raii::PipelineLayout& pipeline_layout, const vk::raii::RenderPass& render_pass) {
+		const auto vert_shader = ji::ResourceSystem::loadFile("res/shaders/shader.vert.spv");
+		const auto frag_shader = ji::ResourceSystem::loadFile("res/shaders/shader.frag.spv");
+
+		const auto vert_shader_module = createShaderModule(device, vert_shader);
+		const auto frag_shader_module = createShaderModule(device, frag_shader);
+
+		const auto vert_shader_stage_info = vk::PipelineShaderStageCreateInfo{
+			.stage = vk::ShaderStageFlagBits::eVertex,
+			.module = vert_shader_module,
+			.pName = "main"
+		};
+
+		const auto frag_shader_stage_info = vk::PipelineShaderStageCreateInfo{
+			.stage = vk::ShaderStageFlagBits::eFragment,
+			.module = frag_shader_module,
+			.pName = "main"
+		};
+
+		const auto shader_stages = std::array{ vert_shader_stage_info, frag_shader_stage_info };
+
+		const auto vertex_input_create_info = vk::PipelineVertexInputStateCreateInfo{
+			.vertexBindingDescriptionCount = 0,
+			.vertexAttributeDescriptionCount = 0
+		};
+
+		const auto input_assembly_create_info = vk::PipelineInputAssemblyStateCreateInfo{
+			.topology = PrimitiveTopology::eTriangleList,
+			.primitiveRestartEnable = false
+		};
+
+		const auto viewport = vk::Viewport{
+			.x = 0.f,
+			.y = 0.f,
+			.width = static_cast<float>(swapchain_extent.width),
+			.height = static_cast<float>(swapchain_extent.height),
+			.minDepth = 0.f,
+			.maxDepth = 1.f
+		};
+
+		const auto scissor = vk::Rect2D{
+			.offset = {0, 0},
+			.extent = swapchain_extent
+		};
+
+		const auto dynamic_states = std::vector{
+			vk::DynamicState::eViewport,
+			vk::DynamicState::eScissor
+		};
+
+		const auto dynamic_state_create_info = vk::PipelineDynamicStateCreateInfo{
+			.dynamicStateCount = static_cast<uint32_t>(dynamic_states.size()),
+			.pDynamicStates = dynamic_states.data()
+		};
+
+		const auto viewport_state_create_info = vk::PipelineViewportStateCreateInfo{
+			.viewportCount = 1,
+			.pViewports = &viewport,
+			.scissorCount = 1,
+			.pScissors = &scissor
+		};
+
+		const auto rasterization_create_info = vk::PipelineRasterizationStateCreateInfo{
+			.depthClampEnable = vk::False,
+			.rasterizerDiscardEnable = vk::False,
+			.polygonMode = PolygonMode::eFill,
+			.cullMode = CullModeFlagBits::eBack,
+			.frontFace = FrontFace::eClockwise,
+			.depthBiasEnable = vk::False,
+			.depthBiasConstantFactor = 0.f,
+			.depthBiasClamp = 0.f,
+			.depthBiasSlopeFactor = 0.f,
+			.lineWidth = 1.f
+		};
+
+		const auto multisample_state_create_info = vk::PipelineMultisampleStateCreateInfo{
+			.rasterizationSamples = SampleCountFlagBits::e1,
+			.sampleShadingEnable = vk::False,
+			.minSampleShading = 1.f,
+			.pSampleMask = nullptr,
+			.alphaToCoverageEnable = vk::False,
+			.alphaToOneEnable = vk::False
+		};
+
+		const auto color_blend_attachment = vk::PipelineColorBlendAttachmentState{
+			.blendEnable = vk::False,
+			.srcColorBlendFactor = BlendFactor::eOne,
+			.dstColorBlendFactor = BlendFactor::eZero,
+			.colorBlendOp = BlendOp::eAdd,
+			.srcAlphaBlendFactor = BlendFactor::eOne,
+			.dstAlphaBlendFactor = BlendFactor::eZero,
+			.alphaBlendOp = BlendOp::eAdd,
+			.colorWriteMask = ColorComponentFlagBits::eR | ColorComponentFlagBits::eG | ColorComponentFlagBits::eB | ColorComponentFlagBits::eA
+		};
+
+		const auto color_blend_state_create_info = vk::PipelineColorBlendStateCreateInfo{
+			.logicOpEnable = vk::False,
+			.logicOp = LogicOp::eCopy,
+			.attachmentCount = 1,
+			.pAttachments = &color_blend_attachment,
+			.blendConstants = std::array{
+				0.f,
+				0.f,
+				0.f,
+				0.f
+			}
+		};
+
+		const auto pipeline_info = vk::GraphicsPipelineCreateInfo{
+			.stageCount = shader_stages.size(),
+			.pStages = shader_stages.data(),
+			.pVertexInputState = &vertex_input_create_info,
+			.pInputAssemblyState = &input_assembly_create_info,
+			.pViewportState = &viewport_state_create_info,
+			.pRasterizationState = &rasterization_create_info,
+			.pMultisampleState = &multisample_state_create_info,
+			.pDepthStencilState = nullptr,
+			.pColorBlendState = &color_blend_state_create_info,
+			.pDynamicState = &dynamic_state_create_info,
+			.layout = pipeline_layout,
+			.renderPass = render_pass,
+			.subpass = 0,
+			.basePipelineHandle = nullptr,
+			.basePipelineIndex = -1
+		};
+
+		return device.createGraphicsPipeline(nullptr, pipeline_info);
+	}
 }
 
 namespace ji {
@@ -390,7 +570,10 @@ namespace ji {
 			glfw::Window&& window,
 			vk::raii::SurfaceKHR&& surface,
 			vk::raii::SwapchainKHR&& swap_chain,
-			std::vector<vk::raii::ImageView>&& image_views
+			std::vector<vk::raii::ImageView>&& image_views,
+			vk::raii::PipelineLayout&& pipeline_layout,
+			vk::raii::RenderPass&& render_pass,
+			vk::raii::Pipeline&& graphics_pipeline
 		) :
 			m_vkInstance(std::move(instance)),
 			m_glfw(std::move(lib)),
@@ -400,7 +583,10 @@ namespace ji {
 			m_vkQueue(std::move(queue)),
 			m_vkSurface(std::move(surface)),
 			m_vkSwapChain(std::move(swap_chain)),
-			m_vkImageViews(std::move(image_views))
+			m_vkImageViews(std::move(image_views)),
+			m_pipelineLayout(std::move(pipeline_layout)),
+			m_renderPass(std::move(render_pass)),
+			m_graphicsPipeline(std::move(graphics_pipeline))
 		{
 #ifndef NDEBUG
 			m_debugMessenger = vk::raii::DebugUtilsMessengerEXT{ m_vkInstance, vk::utils::createDebugMessenger() };
@@ -420,6 +606,9 @@ namespace ji {
 		vk::raii::SwapchainKHR m_vkSwapChain;
 		std::vector<vk::raii::ImageView> m_vkImageViews;
 		std::optional<vk::raii::DebugUtilsMessengerEXT> m_debugMessenger;
+		vk::raii::PipelineLayout m_pipelineLayout;
+		vk::raii::RenderPass m_renderPass;
+		vk::raii::Pipeline m_graphicsPipeline;
 	};
 
 	ji::unique<Application> Application::create(ApplicationInfo&& info) {
@@ -436,6 +625,9 @@ namespace ji {
 		const auto swap_chain_create_info = vk::utils::getSwapChainCreateInfo(vk::utils::getChainSupportDetails(physical_device, surface), window, device, surface, queue_family_indices);
 		auto swap_chain = vk::raii::SwapchainKHR{ device, swap_chain_create_info };
 		auto image_views = vk::utils::createImageViews(device, swap_chain, swap_chain_create_info);
+		auto pipeline_layout = vk::utils::createGraphicsPipelineLayout(device);
+		auto render_pass = vk::utils::createRenderPass(device, swap_chain_create_info.imageFormat);
+		auto graphics_pipeline = vk::utils::createGraphicsPipeline(device, swap_chain_create_info.imageExtent, pipeline_layout, render_pass);
 
 		return ji::make_unique<ApplicationWindows>(
 			std::move(lib),
@@ -446,7 +638,10 @@ namespace ji {
 			std::move(window),
 			std::move(surface),
 			std::move(swap_chain),
-			std::move(image_views)
+			std::move(image_views),
+			std::move(pipeline_layout),
+			std::move(render_pass),
+			std::move(graphics_pipeline)
 		);
 	}
 }
