@@ -403,11 +403,22 @@ namespace vk::utils {
 			.pColorAttachments = &attachment_reference
 		};
 
+		const auto subpass_dependency = vk::SubpassDependency{
+			.srcSubpass = vk::SubpassExternal,
+			.dstSubpass = 0,
+			.srcStageMask = PipelineStageFlagBits::eColorAttachmentOutput,
+			.dstStageMask = PipelineStageFlagBits::eColorAttachmentOutput,
+			.srcAccessMask = vk::AccessFlags{},
+			.dstAccessMask = AccessFlagBits::eColorAttachmentWrite
+		};
+
 		const auto render_pass_create_info = vk::RenderPassCreateInfo{
 			.attachmentCount = 1,
 			.pAttachments = &color_attachment,
 			.subpassCount = 1,
-			.pSubpasses = &subpass
+			.pSubpasses = &subpass,
+			.dependencyCount = 1,
+			.pDependencies = &subpass_dependency
 		};
 
 		return device.createRenderPass(render_pass_create_info);
@@ -530,7 +541,7 @@ namespace vk::utils {
 			}
 		};
 
-		const auto pipeline_info = vk::GraphicsPipelineCreateInfo{
+		return device.createGraphicsPipeline(nullptr, {
 			.stageCount = shader_stages.size(),
 			.pStages = shader_stages.data(),
 			.pVertexInputState = &vertex_input_create_info,
@@ -546,9 +557,45 @@ namespace vk::utils {
 			.subpass = 0,
 			.basePipelineHandle = nullptr,
 			.basePipelineIndex = -1
-		};
+		});
+	}
 
-		return device.createGraphicsPipeline(nullptr, pipeline_info);
+	std::vector<vk::raii::Framebuffer> createFrameBuffers(const vk::raii::Device& device, const vk::raii::RenderPass& render_pass, const vk::Extent2D& swap_chain_extent, std::span<const vk::raii::ImageView> image_views) {
+		std::vector<vk::raii::Framebuffer> framebuffers;
+		framebuffers.reserve(image_views.size());
+
+		for (const auto& image_view : image_views) {
+			const auto attachments = std::array{
+				*image_view
+			};
+
+			framebuffers.emplace_back(device.createFramebuffer({
+				.renderPass = render_pass,
+				.attachmentCount = static_cast<uint32_t>(attachments.size()),
+				.pAttachments = attachments.data(),
+				.width = swap_chain_extent.width,
+				.height = swap_chain_extent.height,
+				.layers = 1
+			}));
+		}
+
+		return framebuffers;
+	}
+
+	vk::raii::CommandPool createCommandPool(const vk::raii::Device& device, const QueueFamilyIndices& queue_family_indices) {
+		return device.createCommandPool(vk::CommandPoolCreateInfo{
+			.flags = vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+			.queueFamilyIndex = queue_family_indices.graphicsFamily.value()
+		});
+	}
+
+	vk::raii::CommandBuffer createCommandBuffer(const vk::raii::Device& device, const vk::raii::CommandPool& command_pool) {
+		auto command_buffers = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo{
+			.commandPool = command_pool,
+			.level = vk::CommandBufferLevel::ePrimary,
+			.commandBufferCount = 1
+		});
+		return std::move(command_buffers.front());
 	}
 }
 
@@ -556,92 +603,195 @@ namespace ji {
 	class ApplicationWindows : public Application {
 	public:
 		void run() override {
-			while (!m_window.shouldClose()) {
+			while (!m_context.window.shouldClose()) {
 				glfw::pollEvents();
+				drawFrame();
 			}
+
+			m_context.device.waitIdle();
 		}
 
-		ApplicationWindows(
-			glfw::GlfwLibrary lib,
-			ApplicationInfo&& info,
-			vk::raii::Instance&& instance,
-			vk::raii::Device&& device,
-			vk::raii::Queue&& queue,
-			glfw::Window&& window,
-			vk::raii::SurfaceKHR&& surface,
-			vk::raii::SwapchainKHR&& swap_chain,
-			std::vector<vk::raii::ImageView>&& image_views,
-			vk::raii::PipelineLayout&& pipeline_layout,
-			vk::raii::RenderPass&& render_pass,
-			vk::raii::Pipeline&& graphics_pipeline
-		) :
-			m_vkInstance(std::move(instance)),
-			m_glfw(std::move(lib)),
-			m_window(std::move(window)),
-			m_applicationInfo(std::move(info)),
-			m_vkDevice(std::move(device)),
-			m_vkQueue(std::move(queue)),
-			m_vkSurface(std::move(surface)),
-			m_vkSwapChain(std::move(swap_chain)),
-			m_vkImageViews(std::move(image_views)),
-			m_pipelineLayout(std::move(pipeline_layout)),
-			m_renderPass(std::move(render_pass)),
-			m_graphicsPipeline(std::move(graphics_pipeline))
+		struct Context {
+			// Order is important here, it declares in what order destructors will be called
+			vk::raii::Instance instance;
+			glfw::GlfwLibrary glfw;
+			glfw::Window window;
+			ApplicationInfo applicationInfo;
+			vk::raii::Device device;
+			vk::raii::Queue queue;
+			vk::raii::SurfaceKHR surface;
+			vk::raii::SwapchainKHR swapChain;
+			std::vector<vk::raii::ImageView> imageViews;
+			vk::raii::PipelineLayout pipelineLayout;
+			vk::raii::RenderPass renderPass;
+			vk::raii::Pipeline graphicsPipeline;
+			std::vector<vk::raii::Framebuffer> frameBuffers;
+			vk::raii::CommandPool commandPool;
+			vk::raii::CommandBuffer commandBuffer;
+			vk::Extent2D swapChainExtent;
+			std::optional<vk::raii::DebugUtilsMessengerEXT> debugMessenger;
+
+			struct SyncObjects {
+				vk::raii::Semaphore imageAvailableSemaphore;
+				vk::raii::Semaphore renderFinishedSemaphore;
+				vk::raii::Fence inFlightFence;
+			} syncObjects;
+		};
+
+		ApplicationWindows(ApplicationInfo&& info) : m_context(createContext(std::move(info)))
 		{
 #ifndef NDEBUG
-			m_debugMessenger = vk::raii::DebugUtilsMessengerEXT{ m_vkInstance, vk::utils::createDebugMessenger() };
+			m_context.debugMessenger = vk::raii::DebugUtilsMessengerEXT{ m_context.instance, vk::utils::createDebugMessenger() };
 #endif
 		}
 
 	private:
-		// Order is important here, it declares in what order destructors will be called
+		Context m_context;
 
-		vk::raii::Instance m_vkInstance;
-		glfw::GlfwLibrary m_glfw;
-		glfw::Window m_window;
-		ApplicationInfo m_applicationInfo;
-		vk::raii::Device m_vkDevice;
-		vk::raii::Queue m_vkQueue;
-		vk::raii::SurfaceKHR m_vkSurface;
-		vk::raii::SwapchainKHR m_vkSwapChain;
-		std::vector<vk::raii::ImageView> m_vkImageViews;
-		std::optional<vk::raii::DebugUtilsMessengerEXT> m_debugMessenger;
-		vk::raii::PipelineLayout m_pipelineLayout;
-		vk::raii::RenderPass m_renderPass;
-		vk::raii::Pipeline m_graphicsPipeline;
+		void recordCommandBuffer(const vk::raii::Framebuffer& frame_buffer) const {
+			const auto& cb = m_context.commandBuffer;
+
+			cb.begin({});
+
+			const auto clear_color = vk::ClearValue{
+				vk::ClearColorValue{
+					std::array{0.f, 0.f, 0.f, 1.f}
+				}
+			};
+			cb.beginRenderPass({
+				.renderPass = m_context.renderPass,
+				.framebuffer = frame_buffer,
+				.renderArea = {
+					.offset = {0, 0},
+					.extent = m_context.swapChainExtent
+				},
+				.clearValueCount = 1,
+				.pClearValues = &clear_color
+			}, vk::SubpassContents::eInline);
+
+			cb.bindPipeline(vk::PipelineBindPoint::eGraphics, m_context.graphicsPipeline);
+
+			cb.setViewport(0, std::array{
+				vk::Viewport{
+					.x = 0.f,
+					.y = 0.f,
+					.width = static_cast<float>(m_context.swapChainExtent.width),
+					.height = static_cast<float>(m_context.swapChainExtent.height),
+					.minDepth = 0.f,
+					.maxDepth = 1.f
+				}
+			});
+
+			cb.setScissor(0, std::array{
+				vk::Rect2D{
+					.offset = {0, 0},
+					.extent = m_context.swapChainExtent
+				}
+			});
+
+			cb.draw(3, 1, 0, 0);
+
+			cb.endRenderPass();
+
+			cb.end();
+		}
+
+		void drawFrame() const {
+			{
+				const auto result = m_context.device.waitForFences(std::array{ *m_context.syncObjects.inFlightFence }, vk::True, std::numeric_limits<std::uint64_t>::max());
+				m_context.device.resetFences(std::array{ *m_context.syncObjects.inFlightFence });
+			}
+
+			{
+				const auto [acquire_result, image_index] = m_context.device.acquireNextImage2KHR({
+					.swapchain = m_context.swapChain,
+					.timeout = std::numeric_limits<std::uint64_t>::max(),
+					.semaphore = m_context.syncObjects.imageAvailableSemaphore,
+					.deviceMask = 1
+				});
+
+				m_context.commandBuffer.reset();
+
+				recordCommandBuffer(m_context.frameBuffers[image_index]);
+
+				const auto wait_semaphores = std::array{ *m_context.syncObjects.imageAvailableSemaphore };
+				const auto wait_stages = std::array<vk::PipelineStageFlags, 1>{ vk::PipelineStageFlagBits::eColorAttachmentOutput };
+				const auto signal_semaphores = std::array{ *m_context.syncObjects.renderFinishedSemaphore };
+
+				m_context.queue.submit(std::array{
+					vk::SubmitInfo{
+						.waitSemaphoreCount = static_cast<uint32_t>(wait_semaphores.size()),
+						.pWaitSemaphores = wait_semaphores.data(),
+						.pWaitDstStageMask = wait_stages.data(),
+						.commandBufferCount = 1,
+						.pCommandBuffers = &*m_context.commandBuffer,
+						.signalSemaphoreCount = static_cast<uint32_t>(signal_semaphores.size()),
+						.pSignalSemaphores = signal_semaphores.data()
+					}
+				}, m_context.syncObjects.inFlightFence);
+
+				const auto present_result = m_context.queue.presentKHR({
+					.waitSemaphoreCount = static_cast<uint32_t>(signal_semaphores.size()),
+					.pWaitSemaphores = signal_semaphores.data(),
+					.swapchainCount = 1,
+					.pSwapchains = &*m_context.swapChain,
+					.pImageIndices = &image_index
+				});
+			}
+		}
+
+		static Context createContext(ApplicationInfo&& info) {
+			auto lib = glfw::init();
+			auto instance = vk::utils::createInstance(info);
+			auto window = vk::utils::createWindow(info);
+			auto surface = vk::utils::createSurface(instance, window);
+			const auto physical_devices = vk::raii::PhysicalDevices{ instance };
+			vk::utils::logPhysicalDevicesInfo(physical_devices);
+			const auto physical_device = vk::utils::selectPhysicalDevice(physical_devices, surface);
+			auto device = vk::utils::createDevice(physical_device, surface);
+			const auto queue_family_indices = vk::utils::findQueueFamilies(physical_device, surface);
+			auto queue = vk::utils::createQueue(device, queue_family_indices);
+			const auto swap_chain_create_info = vk::utils::getSwapChainCreateInfo(vk::utils::getChainSupportDetails(physical_device, surface), window, device, surface, queue_family_indices);
+			auto swap_chain = vk::raii::SwapchainKHR{ device, swap_chain_create_info };
+			auto image_views = vk::utils::createImageViews(device, swap_chain, swap_chain_create_info);
+			auto pipeline_layout = vk::utils::createGraphicsPipelineLayout(device);
+			auto render_pass = vk::utils::createRenderPass(device, swap_chain_create_info.imageFormat);
+			auto graphics_pipeline = vk::utils::createGraphicsPipeline(device, swap_chain_create_info.imageExtent, pipeline_layout, render_pass);
+			auto frame_buffers = vk::utils::createFrameBuffers(device, render_pass, swap_chain_create_info.imageExtent, image_views);
+			auto command_pool = vk::utils::createCommandPool(device, queue_family_indices);
+			auto command_buffer = vk::utils::createCommandBuffer(device, command_pool);
+
+			auto sync_objects = Context::SyncObjects{
+				.imageAvailableSemaphore = device.createSemaphore({}),
+				.renderFinishedSemaphore = device.createSemaphore({}),
+				.inFlightFence = device.createFence({
+					.flags = vk::FenceCreateFlagBits::eSignaled
+				})
+			};
+
+			return {
+				.instance = std::move(instance),
+				.glfw = std::move(lib),
+				.window = std::move(window),
+				.applicationInfo = std::move(info),
+				.device = std::move(device),
+				.queue = std::move(queue),
+				.surface = std::move(surface),
+				.swapChain = std::move(swap_chain),
+				.imageViews = std::move(image_views),
+				.pipelineLayout = std::move(pipeline_layout),
+				.renderPass = std::move(render_pass),
+				.graphicsPipeline = std::move(graphics_pipeline),
+				.frameBuffers = std::move(frame_buffers),
+				.commandPool = std::move(command_pool),
+				.commandBuffer = std::move(command_buffer),
+				.swapChainExtent = swap_chain_create_info.imageExtent,
+				.syncObjects = std::move(sync_objects)
+			};
+		}
 	};
 
 	ji::unique<Application> Application::create(ApplicationInfo&& info) {
-		auto lib = glfw::init();
-		auto instance = vk::utils::createInstance(info);
-		auto window = vk::utils::createWindow(info);
-		auto surface = vk::utils::createSurface(instance, window);
-		const auto physical_devices = vk::raii::PhysicalDevices{ instance };
-		vk::utils::logPhysicalDevicesInfo(physical_devices);
-		const auto physical_device = vk::utils::selectPhysicalDevice(physical_devices, surface);
-		auto device = vk::utils::createDevice(physical_device, surface);
-		const auto queue_family_indices = vk::utils::findQueueFamilies(physical_device, surface);
-		auto queue = vk::utils::createQueue(device, queue_family_indices);
-		const auto swap_chain_create_info = vk::utils::getSwapChainCreateInfo(vk::utils::getChainSupportDetails(physical_device, surface), window, device, surface, queue_family_indices);
-		auto swap_chain = vk::raii::SwapchainKHR{ device, swap_chain_create_info };
-		auto image_views = vk::utils::createImageViews(device, swap_chain, swap_chain_create_info);
-		auto pipeline_layout = vk::utils::createGraphicsPipelineLayout(device);
-		auto render_pass = vk::utils::createRenderPass(device, swap_chain_create_info.imageFormat);
-		auto graphics_pipeline = vk::utils::createGraphicsPipeline(device, swap_chain_create_info.imageExtent, pipeline_layout, render_pass);
-
-		return ji::make_unique<ApplicationWindows>(
-			std::move(lib),
-			std::move(info),
-			std::move(instance),
-			std::move(device),
-			std::move(queue),
-			std::move(window),
-			std::move(surface),
-			std::move(swap_chain),
-			std::move(image_views),
-			std::move(pipeline_layout),
-			std::move(render_pass),
-			std::move(graphics_pipeline)
-		);
+		return ji::make_unique<ApplicationWindows>(std::move(info));
 	}
 }
