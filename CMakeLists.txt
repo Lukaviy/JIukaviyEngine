@@ -31,7 +31,7 @@ set_target_properties(JIukaviyEngine PROPERTIES COMPILE_WARNING_AS_ERROR TRUE)
 FetchContent_Declare(
 	glfwpp
 	GIT_REPOSITORY git@github.com:Lukaviy/glfwpp.git
-	GIT_TAG        f04336296e50ea9b299e68bd27a0868c5023842c # dev
+	GIT_TAG        264b76abdd8ea3836ace92013809db5154fc51be # dev
 )
 
 FetchContent_Declare(
