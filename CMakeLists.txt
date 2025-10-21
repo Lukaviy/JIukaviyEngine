@@ -59,6 +59,8 @@ FetchContent_Declare(
 )
 
 set(GLFWPP_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(TF_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(TF_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(glfwpp glm fmt spdlog taskflow)
 
 find_package(Vulkan REQUIRED)
