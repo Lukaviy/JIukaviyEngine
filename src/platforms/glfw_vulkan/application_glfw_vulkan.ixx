@@ -618,18 +618,21 @@ namespace ji {
 			glfw::Window window;
 			ApplicationInfo applicationInfo;
 			vk::raii::Device device;
+			vk::raii::PhysicalDevice physicalDevice;
 			vk::raii::Queue queue;
 			vk::raii::SurfaceKHR surface;
-			vk::raii::SwapchainKHR swapChain;
-			std::vector<vk::raii::ImageView> imageViews;
 			vk::raii::PipelineLayout pipelineLayout;
 			vk::raii::RenderPass renderPass;
 			vk::raii::Pipeline graphicsPipeline;
-			std::vector<vk::raii::Framebuffer> frameBuffers;
 			vk::raii::CommandPool commandPool;
-			vk::Extent2D swapChainExtent;
 			std::optional<vk::raii::DebugUtilsMessengerEXT> debugMessenger;
 
+			struct SwapChainObject {
+				vk::raii::SwapchainKHR swapChain;
+				vk::Extent2D extent;
+				std::vector<vk::raii::ImageView> imageViews;
+				std::vector<vk::raii::Framebuffer> frameBuffers;
+			} swapChainObject;
 
 			struct SyncObjects {
 				vk::raii::Semaphore imageAvailableSemaphore;
@@ -650,11 +653,16 @@ namespace ji {
 #ifndef NDEBUG
 			m_context.debugMessenger = vk::raii::DebugUtilsMessengerEXT{ m_context.instance, vk::utils::createDebugMessenger() };
 #endif
+
+			m_context.window.sizeEvent.setCallback([this](glfw::Window& window, int width, int height) {
+				m_swapChainDirty = true;
+			});
 		}
 
 	private:
 		Context m_context;
 		size_t m_currentFrame{};
+		bool m_swapChainDirty{};
 		static constexpr size_t g_MaxFramesInFlight = 2;
 
 		void recordCommandBuffer(const Context::FrameObject& frame_object, const vk::raii::Framebuffer& frame_buffer) const {
@@ -672,7 +680,7 @@ namespace ji {
 				.framebuffer = frame_buffer,
 				.renderArea = {
 					.offset = {0, 0},
-					.extent = m_context.swapChainExtent
+					.extent = m_context.swapChainObject.extent
 				},
 				.clearValueCount = 1,
 				.pClearValues = &clear_color
@@ -684,8 +692,8 @@ namespace ji {
 				vk::Viewport{
 					.x = 0.f,
 					.y = 0.f,
-					.width = static_cast<float>(m_context.swapChainExtent.width),
-					.height = static_cast<float>(m_context.swapChainExtent.height),
+					.width = static_cast<float>(m_context.swapChainObject.extent.width),
+					.height = static_cast<float>(m_context.swapChainObject.extent.height),
 					.minDepth = 0.f,
 					.maxDepth = 1.f
 				}
@@ -694,7 +702,7 @@ namespace ji {
 			cb.setScissor(0, std::array{
 				vk::Rect2D{
 					.offset = {0, 0},
-					.extent = m_context.swapChainExtent
+					.extent = m_context.swapChainObject.extent
 				}
 			});
 
@@ -710,23 +718,37 @@ namespace ji {
 			m_currentFrame = (m_currentFrame + 1) % g_MaxFramesInFlight;
 		}
 
-		void drawFrame(const Context::FrameObject& frame_object) const {
+		void drawFrame(const Context::FrameObject& frame_object) {
 			{
 				const auto result = m_context.device.waitForFences(std::array{ *frame_object.m_syncObjects.inFlightFence }, vk::True, std::numeric_limits<std::uint64_t>::max());
-				m_context.device.resetFences(std::array{ *frame_object.m_syncObjects.inFlightFence });
+			}
+
+			if (m_swapChainDirty) {
+				recreateSwapChain();
+				m_swapChainDirty = false;
 			}
 
 			{
 				const auto [acquire_result, image_index] = m_context.device.acquireNextImage2KHR({
-					.swapchain = m_context.swapChain,
+					.swapchain = m_context.swapChainObject.swapChain,
 					.timeout = std::numeric_limits<std::uint64_t>::max(),
 					.semaphore = frame_object.m_syncObjects.imageAvailableSemaphore,
 					.deviceMask = 1
 				});
 
+				if (acquire_result == vk::Result::eErrorOutOfDateKHR) {
+					recreateSwapChain();
+					return;
+				} 
+				if (acquire_result != vk::Result::eSuccess && acquire_result != vk::Result::eSuboptimalKHR) {
+					throw std::runtime_error("Failed to acquire swap chain image!");
+				}
+
+				m_context.device.resetFences(std::array{ *frame_object.m_syncObjects.inFlightFence });
+
 				frame_object.commandBuffer.reset();
 
-				recordCommandBuffer(frame_object, m_context.frameBuffers[image_index]);
+				recordCommandBuffer(frame_object, m_context.swapChainObject.frameBuffers[image_index]);
 
 				const auto wait_semaphores = std::array{ *frame_object.m_syncObjects.imageAvailableSemaphore };
 				const auto wait_stages = std::array<vk::PipelineStageFlags, 1>{ vk::PipelineStageFlagBits::eColorAttachmentOutput };
@@ -748,10 +770,42 @@ namespace ji {
 					.waitSemaphoreCount = static_cast<uint32_t>(signal_semaphores.size()),
 					.pWaitSemaphores = signal_semaphores.data(),
 					.swapchainCount = 1,
-					.pSwapchains = &*m_context.swapChain,
+					.pSwapchains = &*m_context.swapChainObject.swapChain,
 					.pImageIndices = &image_index
 				});
+
+				if (present_result == vk::Result::eSuboptimalKHR) {
+					recreateSwapChain();
+				}
+				else if (present_result != vk::Result::eSuccess) {
+					throw std::runtime_error("Failed to present swap chain image!");
+				}
 			}
+		}
+
+		void recreateSwapChain() {
+			while (true) {
+				const auto [width, height] = m_context.window.getFramebufferSize();
+				if (width != 0 && height != 0) {
+					break;
+				}
+				glfw::waitEvents();
+			};
+
+			m_context.device.waitIdle();
+
+			std::destroy_at(&m_context.swapChainObject);
+			std::construct_at(&m_context.swapChainObject, createSwapChainObject(
+				m_context.device,
+				m_context.renderPass,
+				vk::utils::getSwapChainCreateInfo(
+					vk::utils::getChainSupportDetails(m_context.physicalDevice, m_context.surface),
+					m_context.window,
+					m_context.device,
+					m_context.surface,
+					vk::utils::findQueueFamilies(m_context.physicalDevice, m_context.surface)
+				)
+			));
 		}
 
 		static Context::FrameObject createFrameObject(const vk::raii::Device& device, const vk::raii::CommandPool& command_pool) {
@@ -767,6 +821,19 @@ namespace ji {
 			};
 		}
 
+		static Context::SwapChainObject createSwapChainObject(const vk::raii::Device& device, const vk::raii::RenderPass& render_pass, const vk::SwapchainCreateInfoKHR& swap_chain_create_info) {
+			auto swap_chain = vk::raii::SwapchainKHR{ device, swap_chain_create_info };
+			auto image_views = vk::utils::createImageViews(device, swap_chain, swap_chain_create_info);
+			auto frame_buffers = vk::utils::createFrameBuffers(device, render_pass, swap_chain_create_info.imageExtent, image_views);
+
+			return {
+				.swapChain = std::move(swap_chain),
+				.extent = swap_chain_create_info.imageExtent,
+				.imageViews = std::move(image_views),
+				.frameBuffers = std::move(frame_buffers)
+			};
+		}
+
 		static Context createContext(ApplicationInfo&& info) {
 			auto lib = glfw::init();
 			auto instance = vk::utils::createInstance(info);
@@ -774,19 +841,16 @@ namespace ji {
 			auto surface = vk::utils::createSurface(instance, window);
 			const auto physical_devices = vk::raii::PhysicalDevices{ instance };
 			vk::utils::logPhysicalDevicesInfo(physical_devices);
-			const auto physical_device = vk::utils::selectPhysicalDevice(physical_devices, surface);
+			auto physical_device = vk::utils::selectPhysicalDevice(physical_devices, surface);
 			auto device = vk::utils::createDevice(physical_device, surface);
 			const auto queue_family_indices = vk::utils::findQueueFamilies(physical_device, surface);
 			auto queue = vk::utils::createQueue(device, queue_family_indices);
 			const auto swap_chain_create_info = vk::utils::getSwapChainCreateInfo(vk::utils::getChainSupportDetails(physical_device, surface), window, device, surface, queue_family_indices);
-			auto swap_chain = vk::raii::SwapchainKHR{ device, swap_chain_create_info };
-			auto image_views = vk::utils::createImageViews(device, swap_chain, swap_chain_create_info);
 			auto pipeline_layout = vk::utils::createGraphicsPipelineLayout(device);
 			auto render_pass = vk::utils::createRenderPass(device, swap_chain_create_info.imageFormat);
 			auto graphics_pipeline = vk::utils::createGraphicsPipeline(device, swap_chain_create_info.imageExtent, pipeline_layout, render_pass);
-			auto frame_buffers = vk::utils::createFrameBuffers(device, render_pass, swap_chain_create_info.imageExtent, image_views);
 			auto command_pool = vk::utils::createCommandPool(device, queue_family_indices);
-			auto command_buffer = vk::utils::createCommandBuffer(device, command_pool);
+			auto swap_chain_object = createSwapChainObject(device, render_pass, swap_chain_create_info);
 
 			auto frame_objects = std::vector<Context::FrameObject>{};
 			frame_objects.reserve(g_MaxFramesInFlight);
@@ -800,16 +864,14 @@ namespace ji {
 				.window = std::move(window),
 				.applicationInfo = std::move(info),
 				.device = std::move(device),
+				.physicalDevice = std::move(physical_device),
 				.queue = std::move(queue),
 				.surface = std::move(surface),
-				.swapChain = std::move(swap_chain),
-				.imageViews = std::move(image_views),
 				.pipelineLayout = std::move(pipeline_layout),
 				.renderPass = std::move(render_pass),
 				.graphicsPipeline = std::move(graphics_pipeline),
-				.frameBuffers = std::move(frame_buffers),
 				.commandPool = std::move(command_pool),
-				.swapChainExtent = swap_chain_create_info.imageExtent,
+				.swapChainObject = std::move(swap_chain_object),
 				.frameObjects = std::move(frame_objects)
 			};
 		}
