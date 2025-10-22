@@ -627,15 +627,22 @@ namespace ji {
 			vk::raii::Pipeline graphicsPipeline;
 			std::vector<vk::raii::Framebuffer> frameBuffers;
 			vk::raii::CommandPool commandPool;
-			vk::raii::CommandBuffer commandBuffer;
 			vk::Extent2D swapChainExtent;
 			std::optional<vk::raii::DebugUtilsMessengerEXT> debugMessenger;
+
 
 			struct SyncObjects {
 				vk::raii::Semaphore imageAvailableSemaphore;
 				vk::raii::Semaphore renderFinishedSemaphore;
 				vk::raii::Fence inFlightFence;
-			} syncObjects;
+			};
+
+			struct FrameObject {
+				vk::raii::CommandBuffer commandBuffer;
+				SyncObjects m_syncObjects;
+			};
+
+			std::vector<FrameObject> frameObjects;
 		};
 
 		ApplicationWindows(ApplicationInfo&& info) : m_context(createContext(std::move(info)))
@@ -647,9 +654,11 @@ namespace ji {
 
 	private:
 		Context m_context;
+		size_t m_currentFrame{};
+		static constexpr size_t g_MaxFramesInFlight = 2;
 
-		void recordCommandBuffer(const vk::raii::Framebuffer& frame_buffer) const {
-			const auto& cb = m_context.commandBuffer;
+		void recordCommandBuffer(const Context::FrameObject& frame_object, const vk::raii::Framebuffer& frame_buffer) const {
+			const auto& cb = frame_object.commandBuffer;
 
 			cb.begin({});
 
@@ -696,27 +705,32 @@ namespace ji {
 			cb.end();
 		}
 
-		void drawFrame() const {
+		void drawFrame() {
+			drawFrame(m_context.frameObjects[m_currentFrame]);
+			m_currentFrame = (m_currentFrame + 1) % g_MaxFramesInFlight;
+		}
+
+		void drawFrame(const Context::FrameObject& frame_object) const {
 			{
-				const auto result = m_context.device.waitForFences(std::array{ *m_context.syncObjects.inFlightFence }, vk::True, std::numeric_limits<std::uint64_t>::max());
-				m_context.device.resetFences(std::array{ *m_context.syncObjects.inFlightFence });
+				const auto result = m_context.device.waitForFences(std::array{ *frame_object.m_syncObjects.inFlightFence }, vk::True, std::numeric_limits<std::uint64_t>::max());
+				m_context.device.resetFences(std::array{ *frame_object.m_syncObjects.inFlightFence });
 			}
 
 			{
 				const auto [acquire_result, image_index] = m_context.device.acquireNextImage2KHR({
 					.swapchain = m_context.swapChain,
 					.timeout = std::numeric_limits<std::uint64_t>::max(),
-					.semaphore = m_context.syncObjects.imageAvailableSemaphore,
+					.semaphore = frame_object.m_syncObjects.imageAvailableSemaphore,
 					.deviceMask = 1
 				});
 
-				m_context.commandBuffer.reset();
+				frame_object.commandBuffer.reset();
 
-				recordCommandBuffer(m_context.frameBuffers[image_index]);
+				recordCommandBuffer(frame_object, m_context.frameBuffers[image_index]);
 
-				const auto wait_semaphores = std::array{ *m_context.syncObjects.imageAvailableSemaphore };
+				const auto wait_semaphores = std::array{ *frame_object.m_syncObjects.imageAvailableSemaphore };
 				const auto wait_stages = std::array<vk::PipelineStageFlags, 1>{ vk::PipelineStageFlagBits::eColorAttachmentOutput };
-				const auto signal_semaphores = std::array{ *m_context.syncObjects.renderFinishedSemaphore };
+				const auto signal_semaphores = std::array{ *frame_object.m_syncObjects.renderFinishedSemaphore };
 
 				m_context.queue.submit(std::array{
 					vk::SubmitInfo{
@@ -724,11 +738,11 @@ namespace ji {
 						.pWaitSemaphores = wait_semaphores.data(),
 						.pWaitDstStageMask = wait_stages.data(),
 						.commandBufferCount = 1,
-						.pCommandBuffers = &*m_context.commandBuffer,
+						.pCommandBuffers = &*frame_object.commandBuffer,
 						.signalSemaphoreCount = static_cast<uint32_t>(signal_semaphores.size()),
 						.pSignalSemaphores = signal_semaphores.data()
 					}
-				}, m_context.syncObjects.inFlightFence);
+				}, frame_object.m_syncObjects.inFlightFence);
 
 				const auto present_result = m_context.queue.presentKHR({
 					.waitSemaphoreCount = static_cast<uint32_t>(signal_semaphores.size()),
@@ -738,6 +752,19 @@ namespace ji {
 					.pImageIndices = &image_index
 				});
 			}
+		}
+
+		static Context::FrameObject createFrameObject(const vk::raii::Device& device, const vk::raii::CommandPool& command_pool) {
+			return {
+				.commandBuffer = vk::utils::createCommandBuffer(device, command_pool),
+				.m_syncObjects = Context::SyncObjects{
+					.imageAvailableSemaphore = device.createSemaphore({}),
+					.renderFinishedSemaphore = device.createSemaphore({}),
+					.inFlightFence = device.createFence({
+						.flags = vk::FenceCreateFlagBits::eSignaled
+					})
+				}
+			};
 		}
 
 		static Context createContext(ApplicationInfo&& info) {
@@ -761,13 +788,11 @@ namespace ji {
 			auto command_pool = vk::utils::createCommandPool(device, queue_family_indices);
 			auto command_buffer = vk::utils::createCommandBuffer(device, command_pool);
 
-			auto sync_objects = Context::SyncObjects{
-				.imageAvailableSemaphore = device.createSemaphore({}),
-				.renderFinishedSemaphore = device.createSemaphore({}),
-				.inFlightFence = device.createFence({
-					.flags = vk::FenceCreateFlagBits::eSignaled
-				})
-			};
+			auto frame_objects = std::vector<Context::FrameObject>{};
+			frame_objects.reserve(g_MaxFramesInFlight);
+			for (size_t i = 0; i < g_MaxFramesInFlight; i++) {
+				frame_objects.push_back(createFrameObject(device, command_pool));
+			}
 
 			return {
 				.instance = std::move(instance),
@@ -784,9 +809,8 @@ namespace ji {
 				.graphicsPipeline = std::move(graphics_pipeline),
 				.frameBuffers = std::move(frame_buffers),
 				.commandPool = std::move(command_pool),
-				.commandBuffer = std::move(command_buffer),
 				.swapChainExtent = swap_chain_create_info.imageExtent,
-				.syncObjects = std::move(sync_objects)
+				.frameObjects = std::move(frame_objects)
 			};
 		}
 	};
