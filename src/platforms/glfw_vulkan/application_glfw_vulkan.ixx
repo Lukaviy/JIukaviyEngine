@@ -1,6 +1,7 @@
 module;
 
 #include <ranges>
+#include <array>
 #define GLFW_INCLUDE_VULKAN
 #include <glfwpp/glfwpp.h>
 #include <glm/glm.hpp>
@@ -433,6 +434,36 @@ namespace vk::utils {
 		});
 	}
 
+	struct Vertex {
+		glm::vec2 pos;
+		glm::vec3 color;
+
+		static vk::VertexInputBindingDescription getBindingDescription() {
+			return vk::VertexInputBindingDescription{
+				.binding = 0,
+				.stride = sizeof(Vertex),
+				.inputRate = vk::VertexInputRate::eVertex
+			};
+		}
+
+		static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescription() {
+			return std::array{
+				vk::VertexInputAttributeDescription{
+					.location = 0,
+					.binding = 0,
+					.format = vk::Format::eR32G32Sfloat,
+					.offset = offsetof(Vertex, pos)
+				},
+				vk::VertexInputAttributeDescription{
+					.location = 1,
+					.binding = 0,
+					.format = vk::Format::eR32G32B32Sfloat,
+					.offset = offsetof(Vertex, color)
+				}
+			};
+		}
+	};
+
 	vk::raii::Pipeline createGraphicsPipeline(const vk::raii::Device& device, const vk::Extent2D& swapchain_extent, const vk::raii::PipelineLayout& pipeline_layout, const vk::raii::RenderPass& render_pass) {
 		const auto vert_shader = ji::ResourceSystem::loadFile("res/shaders/shader.vert.spv");
 		const auto frag_shader = ji::ResourceSystem::loadFile("res/shaders/shader.frag.spv");
@@ -454,9 +485,14 @@ namespace vk::utils {
 
 		const auto shader_stages = std::array{ vert_shader_stage_info, frag_shader_stage_info };
 
+		const auto vertex_binding_description = Vertex::getBindingDescription();
+		const auto vertex_attribute_descriptions = Vertex::getAttributeDescription();
+
 		const auto vertex_input_create_info = vk::PipelineVertexInputStateCreateInfo{
-			.vertexBindingDescriptionCount = 0,
-			.vertexAttributeDescriptionCount = 0
+			.vertexBindingDescriptionCount = 1,
+			.pVertexBindingDescriptions = &vertex_binding_description,
+			.vertexAttributeDescriptionCount = static_cast<uint32_t>(vertex_attribute_descriptions.size()),
+			.pVertexAttributeDescriptions = vertex_attribute_descriptions.data()
 		};
 
 		const auto input_assembly_create_info = vk::PipelineInputAssemblyStateCreateInfo{
@@ -597,6 +633,25 @@ namespace vk::utils {
 		});
 		return std::move(command_buffers.front());
 	}
+
+	vk::raii::Buffer createVertexBuffer(const vk::raii::Device& device, size_t size) {
+		return device.createBuffer({
+			.size = size,
+			.usage = BufferUsageFlagBits::eVertexBuffer,
+			.sharingMode = SharingMode::eExclusive
+		});
+	}
+
+	std::uint32_t findMemoryType(std::uint32_t type_filter, vk::MemoryPropertyFlags properties, const vk::raii::PhysicalDevice& physical_device) {
+		const auto mem_properties = physical_device.getMemoryProperties();
+		for (auto i = 0u; i < mem_properties.memoryTypeCount; ++i) {
+			if ((type_filter & (1 << i)) && (mem_properties.memoryTypes[i].propertyFlags & properties) == properties) {
+				return i;
+			}
+		}
+
+		throw std::runtime_error("Failed to find suitable memory type!");
+	}
 }
 
 namespace ji {
@@ -648,13 +703,20 @@ namespace ji {
 			std::vector<FrameObject> frameObjects;
 		};
 
-		ApplicationWindows(ApplicationInfo&& info) : m_context(createContext(std::move(info)))
+		struct Buffers {
+			vk::raii::Buffer vertexBuffer;
+			vk::raii::DeviceMemory vertexBufferMemory;
+		};
+
+		ApplicationWindows(ApplicationInfo&& info) :
+			m_context(createContext(std::move(info))),
+			m_buffers(createBuffers(m_context.device, m_context.physicalDevice, m_vertices))
 		{
 #ifndef NDEBUG
 			m_context.debugMessenger = vk::raii::DebugUtilsMessengerEXT{ m_context.instance, vk::utils::createDebugMessenger() };
 #endif
 
-			m_context.window.sizeEvent.setCallback([this](glfw::Window& window, int width, int height) {
+			m_context.window.sizeEvent.setCallback([this](glfw::Window&, int, int) {
 				m_swapChainDirty = true;
 			});
 		}
@@ -664,6 +726,14 @@ namespace ji {
 		size_t m_currentFrame{};
 		bool m_swapChainDirty{};
 		static constexpr size_t g_MaxFramesInFlight = 2;
+
+		const std::vector<vk::utils::Vertex> m_vertices = {
+			{{0.0f, -0.5f}, {1.0f, 0.0f, 0.0f}},
+			{{0.5f, 0.5f}, {0.0f, 1.0f, 0.0f}},
+			{{-0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}}
+		};
+
+		Buffers m_buffers;
 
 		void recordCommandBuffer(const Context::FrameObject& frame_object, const vk::raii::Framebuffer& frame_buffer) const {
 			const auto& cb = frame_object.commandBuffer;
@@ -706,7 +776,12 @@ namespace ji {
 				}
 			});
 
-			cb.draw(3, 1, 0, 0);
+			const auto vertex_buffers = std::array{ *m_buffers.vertexBuffer };
+			const auto offsets = std::array{ vk::DeviceSize{0} };
+
+			cb.bindVertexBuffers(0, vertex_buffers, offsets);
+
+			cb.draw(static_cast<uint32_t>(m_vertices.size()), 1, 0, 0);
 
 			cb.endRenderPass();
 
@@ -831,6 +906,38 @@ namespace ji {
 				.extent = swap_chain_create_info.imageExtent,
 				.imageViews = std::move(image_views),
 				.frameBuffers = std::move(frame_buffers)
+			};
+		}
+
+		static Buffers createBuffers(const vk::raii::Device& device, const vk::raii::PhysicalDevice& physical_device, std::span<const vk::utils::Vertex> vertices) {
+			const auto buffer_size = sizeof(vk::utils::Vertex) * vertices.size();
+
+			auto vertex_buffer = vk::utils::createVertexBuffer(device, buffer_size);
+
+			const auto memory_requirements = vertex_buffer.getMemoryRequirements();
+
+			const auto memory_type = vk::utils::findMemoryType(
+				memory_requirements.memoryTypeBits, 
+				vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, 
+				physical_device
+			);
+			
+			auto vertex_buffer_memory = device.allocateMemory({
+				.allocationSize = memory_requirements.size,
+				.memoryTypeIndex = memory_type
+			});
+
+			vertex_buffer.bindMemory(vertex_buffer_memory, 0);
+
+			const auto mapped_data = vertex_buffer_memory.mapMemory(0, buffer_size);
+
+			std::memcpy(mapped_data, vertices.data(), buffer_size);
+
+			vertex_buffer_memory.unmapMemory();
+
+			return {
+				.vertexBuffer = std::move(vertex_buffer),
+				.vertexBufferMemory = std::move(vertex_buffer_memory)
 			};
 		}
 
