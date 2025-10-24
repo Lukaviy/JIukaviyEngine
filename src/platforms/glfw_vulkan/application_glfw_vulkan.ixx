@@ -634,23 +634,76 @@ namespace vk::utils {
 		return std::move(command_buffers.front());
 	}
 
-	vk::raii::Buffer createVertexBuffer(const vk::raii::Device& device, size_t size) {
-		return device.createBuffer({
-			.size = size,
-			.usage = BufferUsageFlagBits::eVertexBuffer,
-			.sharingMode = SharingMode::eExclusive
-		});
-	}
-
-	std::uint32_t findMemoryType(std::uint32_t type_filter, vk::MemoryPropertyFlags properties, const vk::raii::PhysicalDevice& physical_device) {
-		const auto mem_properties = physical_device.getMemoryProperties();
-		for (auto i = 0u; i < mem_properties.memoryTypeCount; ++i) {
-			if ((type_filter & (1 << i)) && (mem_properties.memoryTypes[i].propertyFlags & properties) == properties) {
+	std::uint32_t findMemoryType(std::uint32_t type_filter, vk::MemoryPropertyFlags properties, const vk::PhysicalDeviceMemoryProperties& memory_properties) {
+		for (auto i = 0u; i < memory_properties.memoryTypeCount; ++i) {
+			if ((type_filter & (1 << i)) && (memory_properties.memoryTypes[i].propertyFlags & properties) == properties) {
 				return i;
 			}
 		}
 
 		throw std::runtime_error("Failed to find suitable memory type!");
+	}
+
+	std::tuple<vk::raii::Buffer, vk::raii::DeviceMemory> createBuffer(const vk::raii::Device& device, const vk::raii::PhysicalDevice& physical_device, BufferUsageFlags usage, const vk::MemoryPropertyFlags memory_property_flags, size_t size) {
+		auto buffer = device.createBuffer({
+			.size = size,
+			.usage = usage,
+			.sharingMode = SharingMode::eExclusive
+		});
+
+		const auto memory_requirements = buffer.getMemoryRequirements();
+
+		const auto memory_type = vk::utils::findMemoryType(
+			memory_requirements.memoryTypeBits,
+			memory_property_flags,
+			physical_device.getMemoryProperties()
+		);
+
+		auto vertex_buffer_memory = device.allocateMemory({
+			.allocationSize = memory_requirements.size,
+			.memoryTypeIndex = memory_type
+		});
+
+		buffer.bindMemory(vertex_buffer_memory, 0);
+
+		return {
+			std::move(buffer),
+			std::move(vertex_buffer_memory)
+		};
+	}
+
+	void copyBuffer(const vk::raii::Device& device, const vk::raii::CommandPool& command_pool, const vk::raii::Queue& queue, const vk::Buffer& src, const vk::Buffer& dst, vk::DeviceSize size) {
+		const auto commands_buffers = device.allocateCommandBuffers({
+			.commandPool = command_pool,
+			.commandBufferCount = 1
+		});
+
+		const auto& cb = commands_buffers.front();
+
+		cb.begin({
+			.flags = CommandBufferUsageFlagBits::eOneTimeSubmit
+		});
+
+		cb.copyBuffer(src, dst, std::array{
+			vk::BufferCopy{
+				.srcOffset = 0,
+				.dstOffset = 0,
+				.size = size
+			}
+		});
+
+		cb.end();
+
+		const auto submit_command_buffers = std::array{ *cb };
+
+		queue.submit(std::array{
+			vk::SubmitInfo{
+				.commandBufferCount = static_cast<uint32_t>(submit_command_buffers.size()),
+				.pCommandBuffers = submit_command_buffers.data()
+			}
+		}, {});
+
+		queue.waitIdle();
 	}
 }
 
@@ -704,13 +757,15 @@ namespace ji {
 		};
 
 		struct Buffers {
+			/*vk::raii::Buffer stagingBuffer;
+			vk::raii::DeviceMemory stagingBufferMemory;*/
 			vk::raii::Buffer vertexBuffer;
 			vk::raii::DeviceMemory vertexBufferMemory;
 		};
 
 		ApplicationWindows(ApplicationInfo&& info) :
 			m_context(createContext(std::move(info))),
-			m_buffers(createBuffers(m_context.device, m_context.physicalDevice, m_vertices))
+			m_buffers(createBuffers(m_context.device, m_context.physicalDevice, m_context.commandPool, m_context.queue, m_vertices))
 		{
 #ifndef NDEBUG
 			m_context.debugMessenger = vk::raii::DebugUtilsMessengerEXT{ m_context.instance, vk::utils::createDebugMessenger() };
@@ -909,31 +964,30 @@ namespace ji {
 			};
 		}
 
-		static Buffers createBuffers(const vk::raii::Device& device, const vk::raii::PhysicalDevice& physical_device, std::span<const vk::utils::Vertex> vertices) {
-			const auto buffer_size = sizeof(vk::utils::Vertex) * vertices.size();
+		static Buffers createBuffers(const vk::raii::Device& device, const vk::raii::PhysicalDevice& physical_device, const vk::raii::CommandPool& command_pool, const vk::raii::Queue& queue, std::span<const vk::utils::Vertex> vertices) {
+			const auto buffer_size = sizeof(decltype(vertices)::value_type) * vertices.size();
 
-			auto vertex_buffer = vk::utils::createVertexBuffer(device, buffer_size);
-
-			const auto memory_requirements = vertex_buffer.getMemoryRequirements();
-
-			const auto memory_type = vk::utils::findMemoryType(
-				memory_requirements.memoryTypeBits, 
-				vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, 
-				physical_device
+			auto [staging_buffer, staging_buffer_memory] = vk::utils::createBuffer(
+				device,
+				physical_device,
+				vk::BufferUsageFlagBits::eTransferSrc,
+				vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+				buffer_size
 			);
-			
-			auto vertex_buffer_memory = device.allocateMemory({
-				.allocationSize = memory_requirements.size,
-				.memoryTypeIndex = memory_type
-			});
 
-			vertex_buffer.bindMemory(vertex_buffer_memory, 0);
-
-			const auto mapped_data = vertex_buffer_memory.mapMemory(0, buffer_size);
-
+			const auto mapped_data = staging_buffer_memory.mapMemory(0, buffer_size);
 			std::memcpy(mapped_data, vertices.data(), buffer_size);
+			staging_buffer_memory.unmapMemory();
 
-			vertex_buffer_memory.unmapMemory();
+			auto [vertex_buffer, vertex_buffer_memory] = vk::utils::createBuffer(
+				device,
+				physical_device,
+				vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer,
+				vk::MemoryPropertyFlagBits::eDeviceLocal,
+				buffer_size
+			);
+
+			vk::utils::copyBuffer(device, command_pool, queue, staging_buffer, vertex_buffer, buffer_size);
 
 			return {
 				.vertexBuffer = std::move(vertex_buffer),
