@@ -12,6 +12,9 @@ module;
 #include <spdlog/spdlog.h>
 #include <fmt/ranges.h>
 
+#include "glm/ext/matrix_clip_space.hpp"
+#include "glm/ext/matrix_transform.hpp"
+
 export module ApplicationWindows;
 
 import application;
@@ -425,12 +428,12 @@ namespace vk::utils {
 		return device.createRenderPass(render_pass_create_info);
 	}
 
-	vk::raii::PipelineLayout createGraphicsPipelineLayout(const vk::raii::Device& device) {
+	vk::raii::PipelineLayout createGraphicsPipelineLayout(const vk::raii::Device& device, std::span<const vk::DescriptorSetLayout> descriptor_set_layouts) {
 		return device.createPipelineLayout(vk::PipelineLayoutCreateInfo{
-			.setLayoutCount = 0,
-			.pSetLayouts = nullptr,
+			.setLayoutCount = static_cast<uint32_t>(descriptor_set_layouts.size()),
+			.pSetLayouts = descriptor_set_layouts.data(),
 			.pushConstantRangeCount = 0,
-			.pPushConstantRanges = nullptr
+			.pPushConstantRanges = nullptr,
 		});
 	}
 
@@ -536,7 +539,7 @@ namespace vk::utils {
 			.rasterizerDiscardEnable = vk::False,
 			.polygonMode = PolygonMode::eFill,
 			.cullMode = CullModeFlagBits::eBack,
-			.frontFace = FrontFace::eClockwise,
+			.frontFace = FrontFace::eCounterClockwise,
 			.depthBiasEnable = vk::False,
 			.depthBiasConstantFactor = 0.f,
 			.depthBiasClamp = 0.f,
@@ -705,6 +708,42 @@ namespace vk::utils {
 
 		queue.waitIdle();
 	}
+
+	vk::raii::DescriptorSetLayout createDescriptorSetLayout(const vk::raii::Device& device) {
+		constexpr auto ubo_layout_binding = vk::DescriptorSetLayoutBinding{
+			.binding = 0,
+			.descriptorType = vk::DescriptorType::eUniformBuffer,
+			.descriptorCount = 1,
+			.stageFlags = vk::ShaderStageFlagBits::eVertex,
+			.pImmutableSamplers = nullptr
+		};
+
+		return device.createDescriptorSetLayout({
+			.bindingCount = 1,
+			.pBindings = &ubo_layout_binding,
+		});
+	}
+
+	vk::raii::DescriptorPool createDescriptorPool(const vk::raii::Device& device, std::uint32_t max_sets) {
+		const auto pool_size = vk::DescriptorPoolSize{
+			.type = vk::DescriptorType::eUniformBuffer,
+			.descriptorCount = max_sets
+		};
+
+		return device.createDescriptorPool({
+			.maxSets = max_sets,
+			.poolSizeCount = 1,
+			.pPoolSizes = &pool_size
+		});
+	}
+
+	std::vector<vk::raii::DescriptorSet> createDescriptorSets(const vk::raii::Device& device, const vk::raii::DescriptorPool& descriptor_pool, std::span<const vk::DescriptorSetLayout> set_layouts) {
+		return device.allocateDescriptorSets({
+			.descriptorPool = descriptor_pool,
+			.descriptorSetCount = static_cast<uint32_t>(set_layouts.size()),
+			.pSetLayouts = set_layouts.data()
+		});
+	}
 }
 
 namespace ji {
@@ -730,6 +769,8 @@ namespace ji {
 			vk::raii::Queue queue;
 			vk::raii::SurfaceKHR surface;
 			vk::raii::PipelineLayout pipelineLayout;
+			vk::raii::DescriptorSetLayout descriptorSetLayout;
+			vk::raii::DescriptorPool descriptorPool;
 			vk::raii::RenderPass renderPass;
 			vk::raii::Pipeline graphicsPipeline;
 			vk::raii::CommandPool commandPool;
@@ -748,9 +789,17 @@ namespace ji {
 				vk::raii::Fence inFlightFence;
 			};
 
+			struct UniformBuffer {
+				vk::raii::Buffer uniform;
+				vk::raii::DeviceMemory uniformMemory;
+				void* uniformMap;
+			};
+
 			struct FrameObject {
 				vk::raii::CommandBuffer commandBuffer;
-				SyncObjects m_syncObjects;
+				SyncObjects syncObjects;
+				UniformBuffer uniformBuffer;
+				vk::raii::DescriptorSet descriptorSet;
 			};
 
 			std::vector<FrameObject> frameObjects;
@@ -795,12 +844,18 @@ namespace ji {
 
 		Buffers m_buffers;
 
+		struct UniformBufferObject {
+			glm::mat4 model;
+			glm::mat4 view;
+			glm::mat4 projection;
+		};
+
 		void recordCommandBuffer(const Context::FrameObject& frame_object, const vk::raii::Framebuffer& frame_buffer) const {
 			const auto& cb = frame_object.commandBuffer;
 
 			cb.begin({});
 
-			const auto clear_color = vk::ClearValue{
+			constexpr auto clear_color = vk::ClearValue{
 				vk::ClearColorValue{
 					std::array{0.f, 0.f, 0.f, 1.f}
 				}
@@ -838,6 +893,7 @@ namespace ji {
 
 			cb.bindVertexBuffers(0, std::array{ *m_buffers.vertexBuffer }, std::array{ vk::DeviceSize{0} });
 			cb.bindIndexBuffer(m_buffers.indexBuffer, 0, vk::IndexType::eUint16);
+			cb.bindDescriptorSets(vk::PipelineBindPoint::eGraphics, m_context.pipelineLayout, 0, std::array{ *frame_object.descriptorSet }, {});
 
 			cb.drawIndexed(static_cast<uint32_t>(m_indices.size()), 1, 0, 0, 0);
 
@@ -853,7 +909,7 @@ namespace ji {
 
 		void drawFrame(const Context::FrameObject& frame_object) {
 			{
-				const auto result = m_context.device.waitForFences(std::array{ *frame_object.m_syncObjects.inFlightFence }, vk::True, std::numeric_limits<std::uint64_t>::max());
+				const auto result = m_context.device.waitForFences(std::array{ *frame_object.syncObjects.inFlightFence }, vk::True, std::numeric_limits<std::uint64_t>::max());
 			}
 
 			if (m_swapChainDirty) {
@@ -865,7 +921,7 @@ namespace ji {
 				const auto [acquire_result, image_index] = m_context.device.acquireNextImage2KHR({
 					.swapchain = m_context.swapChainObject.swapChain,
 					.timeout = std::numeric_limits<std::uint64_t>::max(),
-					.semaphore = frame_object.m_syncObjects.imageAvailableSemaphore,
+					.semaphore = frame_object.syncObjects.imageAvailableSemaphore,
 					.deviceMask = 1
 				});
 
@@ -877,15 +933,17 @@ namespace ji {
 					throw std::runtime_error("Failed to acquire swap chain image!");
 				}
 
-				m_context.device.resetFences(std::array{ *frame_object.m_syncObjects.inFlightFence });
+				m_context.device.resetFences(std::array{ *frame_object.syncObjects.inFlightFence });
 
 				frame_object.commandBuffer.reset();
 
+				updateUniformBuffer(frame_object);
+
 				recordCommandBuffer(frame_object, m_context.swapChainObject.frameBuffers[image_index]);
 
-				const auto wait_semaphores = std::array{ *frame_object.m_syncObjects.imageAvailableSemaphore };
+				const auto wait_semaphores = std::array{ *frame_object.syncObjects.imageAvailableSemaphore };
 				const auto wait_stages = std::array<vk::PipelineStageFlags, 1>{ vk::PipelineStageFlagBits::eColorAttachmentOutput };
-				const auto signal_semaphores = std::array{ *frame_object.m_syncObjects.renderFinishedSemaphore };
+				const auto signal_semaphores = std::array{ *frame_object.syncObjects.renderFinishedSemaphore };
 
 				m_context.queue.submit(std::array{
 					vk::SubmitInfo{
@@ -897,7 +955,7 @@ namespace ji {
 						.signalSemaphoreCount = static_cast<uint32_t>(signal_semaphores.size()),
 						.pSignalSemaphores = signal_semaphores.data()
 					}
-				}, frame_object.m_syncObjects.inFlightFence);
+				}, frame_object.syncObjects.inFlightFence);
 
 				const auto present_result = m_context.queue.presentKHR({
 					.waitSemaphoreCount = static_cast<uint32_t>(signal_semaphores.size()),
@@ -923,7 +981,7 @@ namespace ji {
 					break;
 				}
 				glfw::waitEvents();
-			};
+			}
 
 			m_context.device.waitIdle();
 
@@ -941,16 +999,37 @@ namespace ji {
 			));
 		}
 
-		static Context::FrameObject createFrameObject(const vk::raii::Device& device, const vk::raii::CommandPool& command_pool) {
+		void updateUniformBuffer(const Context::FrameObject& frame_object) const {
+			static auto start_time = std::chrono::high_resolution_clock::now();
+
+			const auto current_time = std::chrono::high_resolution_clock::now();
+			const auto time = std::chrono::duration<float>(current_time - start_time).count();
+
+			UniformBufferObject ubo{};
+			ubo.model = glm::rotate(glm::mat4{ 1.0f }, time * glm::radians(90.0f), glm::vec3{ 0.0f, 0.0f, 1.0f });
+			ubo.view = glm::lookAt(glm::vec3{ 2.0f, 2.0f, 2.0f }, glm::vec3{ 0.0f, 0.0f, 0.0f }, glm::vec3{ 0.0f, 0.0f, 1.0f });
+			ubo.projection = glm::perspective(glm::radians(45.0f), m_context.swapChainObject.extent.width / static_cast<float>(m_context.swapChainObject.extent.height), 0.1f, 10.0f);
+			ubo.projection[1][1] *= -1;
+
+			std::memcpy(frame_object.uniformBuffer.uniformMap, &ubo, sizeof(ubo));
+		}
+
+		static Context::FrameObject createFrameObject(const vk::raii::Device& device, const vk::raii::PhysicalDevice& physical_device, const vk::raii::CommandPool& command_pool, vk::raii::DescriptorSet descriptor_set) {
+			auto uniform_buffer = createUniformBuffers(device, physical_device);
+
+			configureDescriptorSet(device, descriptor_set, uniform_buffer.uniform);
+
 			return {
 				.commandBuffer = vk::utils::createCommandBuffer(device, command_pool),
-				.m_syncObjects = Context::SyncObjects{
+				.syncObjects = Context::SyncObjects{
 					.imageAvailableSemaphore = device.createSemaphore({}),
 					.renderFinishedSemaphore = device.createSemaphore({}),
 					.inFlightFence = device.createFence({
 						.flags = vk::FenceCreateFlagBits::eSignaled
 					})
-				}
+				},
+				.uniformBuffer = std::move(uniform_buffer),
+				.descriptorSet = std::move(descriptor_set)
 			};
 		}
 
@@ -1011,6 +1090,55 @@ namespace ji {
 			};
 		}
 
+		static Context::UniformBuffer createUniformBuffers(const vk::raii::Device& device, const vk::raii::PhysicalDevice& physical_device) {
+			constexpr auto buffer_size = sizeof(UniformBufferObject);
+
+			auto [buffer, buffer_memory] = vk::utils::createBuffer(
+				device,
+				physical_device,
+				vk::BufferUsageFlagBits::eUniformBuffer,
+				vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+				buffer_size
+			);
+
+			const auto memory_map = buffer_memory.mapMemory(0, buffer_size);
+
+			return {
+				.uniform = std::move(buffer),
+				.uniformMemory = std::move(buffer_memory),
+				.uniformMap = memory_map
+			};
+		}
+
+		static void configureDescriptorSet(const vk::raii::Device& device, const vk::raii::DescriptorSet& descriptor_set, const vk::raii::Buffer& buffer) {
+			const auto buffer_info = vk::DescriptorBufferInfo{
+				.buffer = buffer,
+				.offset = 0,
+				.range = sizeof(UniformBufferObject)
+			};
+
+			device.updateDescriptorSets(std::array{
+				vk::WriteDescriptorSet{
+					.dstSet = descriptor_set,
+					.dstBinding = 0,
+					.dstArrayElement = 0,
+					.descriptorCount = 1,
+					.descriptorType = vk::DescriptorType::eUniformBuffer,
+					.pBufferInfo = &buffer_info
+				}
+			}, {});
+		}
+
+		static std::vector<vk::raii::DescriptorSet> createDescriptorSets(const vk::raii::Device& device, const vk::raii::DescriptorPool& descriptor_pool, std::span<const vk::DescriptorSetLayout> set_layouts, std::span<const Context::FrameObject> frame_objects) {
+			auto descriptor_sets = vk::utils::createDescriptorSets(device, descriptor_pool, set_layouts);
+
+			for (auto i = 0u; i < descriptor_sets.size(); ++i) {
+				configureDescriptorSet(device, descriptor_sets[i], frame_objects[i].uniformBuffer.uniform);
+			}
+
+			return descriptor_sets;
+		}
+
 		static Context createContext(ApplicationInfo&& info) {
 			auto lib = glfw::init();
 			auto instance = vk::utils::createInstance(info);
@@ -1023,16 +1151,22 @@ namespace ji {
 			const auto queue_family_indices = vk::utils::findQueueFamilies(physical_device, surface);
 			auto queue = vk::utils::createQueue(device, queue_family_indices);
 			const auto swap_chain_create_info = vk::utils::getSwapChainCreateInfo(vk::utils::getChainSupportDetails(physical_device, surface), window, device, surface, queue_family_indices);
-			auto pipeline_layout = vk::utils::createGraphicsPipelineLayout(device);
+			auto descriptor_set_layout = vk::utils::createDescriptorSetLayout(device);
+			auto descriptor_pool = vk::utils::createDescriptorPool(device, g_MaxFramesInFlight);
+			auto pipeline_layout = vk::utils::createGraphicsPipelineLayout(device, std::array{ *descriptor_set_layout });
 			auto render_pass = vk::utils::createRenderPass(device, swap_chain_create_info.imageFormat);
 			auto graphics_pipeline = vk::utils::createGraphicsPipeline(device, swap_chain_create_info.imageExtent, pipeline_layout, render_pass);
 			auto command_pool = vk::utils::createCommandPool(device, queue_family_indices);
 			auto swap_chain_object = createSwapChainObject(device, render_pass, swap_chain_create_info);
 
+			const auto set_layouts = std::vector<vk::DescriptorSetLayout>(g_MaxFramesInFlight, descriptor_set_layout);
+
+			auto descriptor_sets = vk::utils::createDescriptorSets(device, descriptor_pool, set_layouts);
+
 			auto frame_objects = std::vector<Context::FrameObject>{};
 			frame_objects.reserve(g_MaxFramesInFlight);
 			for (size_t i = 0; i < g_MaxFramesInFlight; i++) {
-				frame_objects.push_back(createFrameObject(device, command_pool));
+				frame_objects.push_back(createFrameObject(device, physical_device, command_pool, std::move(descriptor_sets[i])));
 			}
 
 			return {
@@ -1045,6 +1179,8 @@ namespace ji {
 				.queue = std::move(queue),
 				.surface = std::move(surface),
 				.pipelineLayout = std::move(pipeline_layout),
+				.descriptorSetLayout = std::move(descriptor_set_layout),
+				.descriptorPool = std::move(descriptor_pool),
 				.renderPass = std::move(render_pass),
 				.graphicsPipeline = std::move(graphics_pipeline),
 				.commandPool = std::move(command_pool),
